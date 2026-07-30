@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -44,25 +44,42 @@ class Command(BaseCommand):
 
         teacher_profiles = []
         teacher_specs = [
-            ("teacher@demo.school", "Ali", "Teacher", "MSc Mathematics"),
-            ("fatima@demo.school", "Fatima", "Noor", "MA English"),
-            ("hassan@demo.school", "Hassan", "Raza", "MSc Physics"),
-            ("sadia@demo.school", "Sadia", "Iqbal", "B.Ed"),
+            ("teacher@demo.school", "Ali", "Teacher", "MSc Mathematics", "3520211111111", 85000, "subject_teacher", time(7, 30), time(14, 30), ["Mathematics", "Science"]),
+            ("fatima@demo.school", "Fatima", "Noor", "MA English", "3520222222222", 78000, "subject_teacher", time(7, 30), time(14, 30), ["English", "Urdu"]),
+            ("hassan@demo.school", "Hassan", "Raza", "MSc Physics", "3520233333333", 82000, "sports_teacher", time(8, 0), time(15, 0), ["Science", "Mathematics"]),
+            ("sadia@demo.school", "Sadia", "Iqbal", "B.Ed", "3520244444444", 70000, "principal", time(7, 0), time(15, 0), ["Islamiyat", "Urdu"]),
         ]
-        for email, first_name, last_name, qualification in teacher_specs:
+        teacher_subject_names: dict[str, list[str]] = {}
+        for email, first_name, last_name, qualification, cnic, salary, designation, shift_start, shift_end, subject_names in teacher_specs:
             teacher_account = self._upsert_user(email, first_name, last_name, school, RoleChoices.TEACHER)
             profile, _ = TeacherProfile.objects.get_or_create(
                 user=teacher_account,
-                defaults={"school": school, "qualification": qualification},
+                defaults={
+                    "school": school,
+                    "qualification": qualification,
+                    "monthly_salary": salary,
+                    "designation": designation,
+                    "shift_start_time": shift_start,
+                    "shift_end_time": shift_end,
+                    "cnic": cnic,
+                    "phone_number": f"0300{1000000 + len(teacher_profiles)}",
+                    "address": f"House {len(teacher_profiles) + 1}, Demo Street, Lahore",
+                },
             )
-            if profile.school_id != school.id:
-                profile.school = school
-            if profile.qualification != qualification:
-                profile.qualification = qualification
+            profile.school = school
+            profile.qualification = qualification
+            profile.monthly_salary = salary
+            profile.designation = designation
+            profile.shift_start_time = shift_start
+            profile.shift_end_time = shift_end
+            profile.cnic = cnic
+            profile.phone_number = f"0300{1000000 + len(teacher_profiles)}"
+            profile.address = f"House {len(teacher_profiles) + 1}, Demo Street, Lahore"
             if not profile.employee_id.startswith("TCH-"):
                 profile.employee_id = ""
             profile.save()
             teacher_profiles.append(profile)
+            teacher_subject_names[email] = subject_names
 
         parent_profiles = []
         parent_specs = [
@@ -117,12 +134,20 @@ class Command(BaseCommand):
                 section.capacity = 30 + (idx % 3) * 5
                 section.shift = shifts[idx % len(shifts)]
                 section.save(update_fields=["class_teacher", "capacity", "shift"])
+                second_teacher = teacher_profiles[(idx + 2) % len(teacher_profiles)]
+                section.teachers.set({teacher_profile, second_teacher})
                 sections.append(section)
 
         subjects = []
+        subject_by_name: dict[str, Subject] = {}
         for subject_name in ["Mathematics", "English", "Science", "Computer", "Urdu", "Islamiyat"]:
             subject, _ = Subject.objects.get_or_create(school=school, name=subject_name)
             subjects.append(subject)
+            subject_by_name[subject_name] = subject
+
+        for profile in teacher_profiles:
+            names = teacher_subject_names.get(profile.user.email, [])
+            profile.subjects_taught.set([subject_by_name[name] for name in names if name in subject_by_name])
 
         for level in class_levels:
             for subject in subjects:

@@ -78,3 +78,128 @@ class DefaultSectionTests(TestCase):
 
         call_command("backfill_default_sections")
         self.assertEqual(Section.objects.filter(class_level=bare).count(), 1)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
+class SectionTeacherAssignmentTests(TestCase):
+    def setUp(self):
+        from accounts.models import TeacherProfile
+
+        self.client = APIClient()
+        self.school = School.objects.create(name="Multi Teacher School", slug="multi-teacher-school")
+        self.year = AcademicYear.objects.create(
+            school=self.school,
+            name="2026-2027",
+            start_date=date(2026, 4, 1),
+            end_date=date(2027, 3, 31),
+            is_active=True,
+        )
+        self.class_level = ClassLevel.objects.create(
+            school=self.school,
+            academic_year=self.year,
+            name="Class 1",
+            order=1,
+        )
+        self.admin = User.objects.create_user(
+            email="admin@multi.example.com",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        UserRole.objects.create(user=self.admin, school=self.school, role=RoleChoices.SCHOOL_ADMIN)
+
+        self.teachers = []
+        for index, name in enumerate(["Ali", "Fatima", "Hassan"], start=1):
+            user = User.objects.create_user(
+                email=f"{name.lower()}@multi.example.com",
+                password="DemoPass123!",
+                first_name=name,
+                active_school=self.school,
+            )
+            UserRole.objects.create(user=user, school=self.school, role=RoleChoices.TEACHER)
+            profile = TeacherProfile.objects.create(user=user, school=self.school)
+            self.teachers.append(profile)
+
+        self.client.force_authenticate(user=self.admin)
+
+    def test_section_supports_multiple_teachers_and_optional_incharge(self):
+        response = self.client.post(
+            "/api/v1/sections/",
+            {
+                "name": "A",
+                "class_level": self.class_level.id,
+                "capacity": 30,
+                "shift": "daily",
+                "teachers": [self.teachers[0].id, self.teachers[1].id],
+                "class_teacher": self.teachers[0].id,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(set(response.data["teachers"]), {self.teachers[0].id, self.teachers[1].id})
+        self.assertEqual(response.data["class_teacher"], self.teachers[0].id)
+        self.assertIn("Ali", response.data["class_teacher_name"])
+
+        without_incharge = self.client.post(
+            "/api/v1/sections/",
+            {
+                "name": "B",
+                "class_level": self.class_level.id,
+                "capacity": 28,
+                "shift": "daily",
+                "teachers": [self.teachers[1].id, self.teachers[2].id],
+                "class_teacher": None,
+            },
+            format="json",
+        )
+        self.assertEqual(without_incharge.status_code, 201)
+        self.assertIsNone(without_incharge.data["class_teacher"])
+        self.assertEqual(
+            set(without_incharge.data["teachers"]),
+            {self.teachers[1].id, self.teachers[2].id},
+        )
+
+    def test_same_teacher_can_teach_multiple_sections(self):
+        first = self.client.post(
+            "/api/v1/sections/",
+            {
+                "name": "A",
+                "class_level": self.class_level.id,
+                "capacity": 30,
+                "shift": "daily",
+                "teachers": [self.teachers[0].id],
+            },
+            format="json",
+        )
+        second = self.client.post(
+            "/api/v1/sections/",
+            {
+                "name": "B",
+                "class_level": self.class_level.id,
+                "capacity": 30,
+                "shift": "daily",
+                "teachers": [self.teachers[0].id, self.teachers[1].id],
+            },
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(self.teachers[0].teaching_sections.count(), 2)
+
+    def test_class_incharge_is_auto_added_to_assigned_teachers(self):
+        response = self.client.post(
+            "/api/v1/sections/",
+            {
+                "name": "C",
+                "class_level": self.class_level.id,
+                "capacity": 25,
+                "shift": "daily",
+                "teachers": [self.teachers[1].id],
+                "class_teacher": self.teachers[0].id,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            set(response.data["teachers"]),
+            {self.teachers[0].id, self.teachers[1].id},
+        )

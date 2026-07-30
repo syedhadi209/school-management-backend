@@ -62,11 +62,36 @@ class UserRole(models.Model):
 
 
 class TeacherProfile(models.Model):
+    DESIGNATION_CHOICES = (
+        ("subject_teacher", "Subject Teacher"),
+        ("accountant", "Accountant"),
+        ("principal", "Principal"),
+        ("sports_teacher", "Sports Teacher"),
+        ("maid", "Maid"),
+    )
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="teacher_profile")
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="teachers")
     employee_id = models.CharField(max_length=30, blank=True)
+    designation = models.CharField(
+        max_length=30,
+        choices=DESIGNATION_CHOICES,
+        default="subject_teacher",
+    )
+    shift_start_time = models.TimeField(null=True, blank=True)
+    shift_end_time = models.TimeField(null=True, blank=True)
     joining_date = models.DateField(null=True, blank=True)
     qualification = models.CharField(max_length=255, blank=True)
+    monthly_salary = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    address = models.TextField(blank=True)
+    cnic = models.CharField(max_length=20, blank=True)
+    phone_number = models.CharField(max_length=30, blank=True)
+    subjects_taught = models.ManyToManyField(
+        "academics.Subject",
+        blank=True,
+        related_name="specialist_teachers",
+        help_text="Subject specialties for this teacher. Section assignments are managed separately.",
+    )
 
     class Meta:
         constraints = [
@@ -74,7 +99,12 @@ class TeacherProfile(models.Model):
                 fields=["school", "employee_id"],
                 name="unique_teacher_employee_id_per_school",
                 condition=~models.Q(employee_id=""),
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["school", "cnic"],
+                name="unique_teacher_cnic_per_school",
+                condition=~models.Q(cnic=""),
+            ),
         ]
 
     def save(self, *args, **kwargs):

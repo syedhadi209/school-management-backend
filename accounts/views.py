@@ -79,12 +79,22 @@ class UserRoleViewSet(TenantScopedModelViewSet):
 
 
 class TeacherProfileViewSet(TenantScopedModelViewSet):
-    queryset = TeacherProfile.objects.select_related("user").all()
+    queryset = TeacherProfile.objects.select_related("user").prefetch_related("subjects_taught").all()
     serializer_class = TeacherProfileSerializer
     permission_classes = [IsAuthenticated, IsSchoolAdmin]
-    search_fields = ["user__first_name", "user__last_name", "user__email", "qualification", "employee_id"]
-    filterset_fields = ["joining_date"]
-    ordering_fields = ["joining_date", "user__first_name"]
+    search_fields = [
+        "user__first_name",
+        "user__last_name",
+        "user__email",
+        "qualification",
+        "employee_id",
+        "phone_number",
+        "cnic",
+        "designation",
+        "subjects_taught__name",
+    ]
+    filterset_fields = ["joining_date", "subjects_taught", "designation"]
+    ordering_fields = ["joining_date", "user__first_name", "monthly_salary", "shift_start_time"]
     ordering = ["user__first_name"]
 
 

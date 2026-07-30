@@ -38,11 +38,23 @@ class ClassLevelViewSet(TenantScopedModelViewSet):
 
 
 class SectionViewSet(TenantScopedModelViewSet):
-    queryset = Section.objects.select_related("class_level", "class_teacher__user").annotate(student_count=Count("students")).all()
+    queryset = (
+        Section.objects.select_related("class_level", "class_teacher__user")
+        .prefetch_related("teachers__user")
+        .annotate(student_count=Count("students", distinct=True))
+        .all()
+    )
     serializer_class = SectionSerializer
     permission_classes = [IsAuthenticated, IsManager]
-    search_fields = ["name", "class_level__name", "class_teacher__user__first_name", "class_teacher__user__last_name"]
-    filterset_fields = ["class_level", "shift", "class_teacher"]
+    search_fields = [
+        "name",
+        "class_level__name",
+        "class_teacher__user__first_name",
+        "class_teacher__user__last_name",
+        "teachers__user__first_name",
+        "teachers__user__last_name",
+    ]
+    filterset_fields = ["class_level", "shift", "class_teacher", "teachers"]
     ordering_fields = ["name", "capacity", "shift"]
     ordering = ["class_level__name", "name"]
 

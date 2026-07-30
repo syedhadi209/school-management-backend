@@ -33,6 +33,13 @@ class Section(models.Model):
         null=True,
         blank=True,
         related_name="homeroom_sections",
+        help_text="Optional class incharge / class teacher for this section.",
+    )
+    teachers = models.ManyToManyField(
+        "accounts.TeacherProfile",
+        blank=True,
+        related_name="teaching_sections",
+        help_text="Teachers assigned to this section. A teacher may teach many sections.",
     )
 
     class Meta:
