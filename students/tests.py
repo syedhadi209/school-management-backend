@@ -158,6 +158,16 @@ class BoardClassEligibilityTests(TestCase):
         self.assertIn(self.regular_student.id, ids)
         self.assertNotIn(self.other_teacher_student.id, ids)
 
+    def test_teacher_sees_students_in_multi_teacher_sections(self):
+        self.other_section.teachers.add(self.teacher)
+        self.client.force_authenticate(user=self.teacher_user)
+
+        response = self.client.get("/api/v1/students/")
+
+        self.assertEqual(response.status_code, 200)
+        ids = {student["id"] for student in response.data["results"]}
+        self.assertIn(self.other_teacher_student.id, ids)
+
     def test_teacher_can_update_board_roll_for_assigned_student(self):
         self.client.force_authenticate(user=self.teacher_user)
         response = self.client.patch(

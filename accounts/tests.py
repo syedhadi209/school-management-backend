@@ -233,3 +233,51 @@ class TeacherEmploymentTests(TestCase):
         response = self.client.get("/api/v1/accounts/teachers/?search=03119998877")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 1)
+
+    def test_teacher_dashboard_uses_live_assigned_section_and_student_counts(self):
+        created = self.client.post(
+            "/api/v1/accounts/teachers/",
+            {
+                "first_name": "Dashboard",
+                "last_name": "Teacher",
+                "email": "dashboard.teacher@example.com",
+                "password": "DemoPass123!",
+                "subjects_taught": [self.math.id, self.english.id],
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        profile = TeacherProfile.objects.get(pk=created.data["id"])
+        teacher_user = profile.user
+
+        second_section = Section.objects.create(
+            school=self.school,
+            class_level=self.class_level,
+            name="B",
+        )
+        self.section.teachers.add(profile)
+        second_section.teachers.add(profile)
+
+        from students.models import Student
+
+        Student.objects.create(
+            school=self.school,
+            section=self.section,
+            first_name="Student",
+            last_name="One",
+        )
+        Student.objects.create(
+            school=self.school,
+            section=second_section,
+            first_name="Student",
+            last_name="Two",
+        )
+
+        self.client.force_authenticate(user=teacher_user)
+        response = self.client.get("/api/v1/accounts/teacher-dashboard/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["assigned_sections"], 2)
+        self.assertEqual(response.data["students"], 2)
+        self.assertEqual(response.data["subjects"], 2)
+        self.assertEqual(response.data["incharge_sections"], 0)

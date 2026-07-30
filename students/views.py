@@ -1,5 +1,6 @@
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
 
 from core.permissions import IsStudentStaff, is_school_admin_or_manager, is_teacher_only
 from core.viewsets import TenantScopedModelViewSet
@@ -39,7 +40,10 @@ class StudentViewSet(TenantScopedModelViewSet):
             teacher_profile = getattr(user, "teacher_profile", None)
             if teacher_profile is None:
                 return queryset.none()
-            return queryset.filter(section__class_teacher=teacher_profile)
+            return queryset.filter(
+                Q(section__teachers=teacher_profile)
+                | Q(section__class_teacher=teacher_profile)
+            ).distinct()
         return queryset.none()
 
     def create(self, request, *args, **kwargs):
