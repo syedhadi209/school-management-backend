@@ -1,7 +1,6 @@
 from rest_framework import permissions, status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.viewsets import ModelViewSet
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -72,18 +71,27 @@ class LogoutView(APIView):
 
 
 class UserRoleViewSet(TenantScopedModelViewSet):
-    queryset = UserRole.objects.all()
+    queryset = UserRole.objects.select_related("user", "school").all()
     serializer_class = UserRoleSerializer
     permission_classes = [IsAuthenticated, IsSchoolAdmin]
+    search_fields = ["user__email", "role"]
+    filterset_fields = ["role", "user"]
 
 
 class TeacherProfileViewSet(TenantScopedModelViewSet):
-    queryset = TeacherProfile.objects.all()
+    queryset = TeacherProfile.objects.select_related("user").all()
     serializer_class = TeacherProfileSerializer
     permission_classes = [IsAuthenticated, IsSchoolAdmin]
+    search_fields = ["user__first_name", "user__last_name", "user__email", "qualification", "employee_id"]
+    filterset_fields = ["joining_date"]
+    ordering_fields = ["joining_date", "user__first_name"]
+    ordering = ["user__first_name"]
 
 
 class ParentProfileViewSet(TenantScopedModelViewSet):
-    queryset = ParentProfile.objects.all()
+    queryset = ParentProfile.objects.select_related("user").all()
     serializer_class = ParentProfileSerializer
     permission_classes = [IsAuthenticated, IsSchoolAdmin]
+    search_fields = ["user__first_name", "user__last_name", "user__email"]
+    ordering_fields = ["user__first_name"]
+    ordering = ["user__first_name"]

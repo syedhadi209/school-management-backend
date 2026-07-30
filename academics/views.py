@@ -1,7 +1,9 @@
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Count
 
 from core.permissions import IsManager
 from core.viewsets import TenantScopedModelViewSet
+from schools.services import get_or_create_default_academic_year
 
 from .models import ClassLevel, ClassSubject, PassingCriteria, Section, Subject, TeacherSubjectAssignment
 from .serializers import (
@@ -15,36 +17,61 @@ from .serializers import (
 
 
 class ClassLevelViewSet(TenantScopedModelViewSet):
-    queryset = ClassLevel.objects.all()
+    queryset = ClassLevel.objects.select_related("academic_year").annotate(section_count=Count("sections")).all()
     serializer_class = ClassLevelSerializer
     permission_classes = [IsAuthenticated, IsManager]
+    search_fields = ["name", "academic_year__name"]
+    filterset_fields = ["academic_year", "is_board_class"]
+    ordering_fields = ["name", "order", "academic_year__name"]
+    ordering = ["order", "name"]
+
+    def perform_create(self, serializer):
+        school = self.request.user.active_school
+        academic_year = serializer.validated_data.get("academic_year")
+        if academic_year is None:
+            academic_year = get_or_create_default_academic_year(school)
+        serializer.save(school=school, academic_year=academic_year)
 
 
 class SectionViewSet(TenantScopedModelViewSet):
-    queryset = Section.objects.all()
+    queryset = Section.objects.select_related("class_level", "class_teacher__user").annotate(student_count=Count("students")).all()
     serializer_class = SectionSerializer
     permission_classes = [IsAuthenticated, IsManager]
+    search_fields = ["name", "class_level__name", "class_teacher__user__first_name", "class_teacher__user__last_name"]
+    filterset_fields = ["class_level", "shift", "class_teacher"]
+    ordering_fields = ["name", "capacity", "shift"]
+    ordering = ["class_level__name", "name"]
 
 
 class SubjectViewSet(TenantScopedModelViewSet):
     queryset = Subject.objects.all()
     serializer_class = SubjectSerializer
     permission_classes = [IsAuthenticated, IsManager]
+    search_fields = ["name"]
+    ordering_fields = ["name"]
+    ordering = ["name"]
 
 
 class ClassSubjectViewSet(TenantScopedModelViewSet):
-    queryset = ClassSubject.objects.all()
+    queryset = ClassSubject.objects.select_related("class_level", "subject").all()
     serializer_class = ClassSubjectSerializer
     permission_classes = [IsAuthenticated, IsManager]
+    filterset_fields = ["class_level", "subject"]
+    ordering_fields = ["class_level__name", "subject__name"]
 
 
 class TeacherSubjectAssignmentViewSet(TenantScopedModelViewSet):
-    queryset = TeacherSubjectAssignment.objects.all()
+    queryset = TeacherSubjectAssignment.objects.select_related(
+        "teacher__user", "subject", "section", "academic_year"
+    ).all()
     serializer_class = TeacherSubjectAssignmentSerializer
     permission_classes = [IsAuthenticated, IsManager]
+    search_fields = ["teacher__user__first_name", "teacher__user__last_name", "subject__name", "section__name"]
+    filterset_fields = ["teacher", "subject", "section", "academic_year"]
 
 
 class PassingCriteriaViewSet(TenantScopedModelViewSet):
-    queryset = PassingCriteria.objects.all()
+    queryset = PassingCriteria.objects.select_related("class_level", "academic_year").all()
     serializer_class = PassingCriteriaSerializer
     permission_classes = [IsAuthenticated, IsManager]
+    filterset_fields = ["class_level", "academic_year"]

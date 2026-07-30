@@ -35,3 +35,34 @@ class IsTeacher(HasRole):
 class IsParent(HasRole):
     required_roles = {"parent", "school_admin"}
 
+
+class IsStudentStaff(HasRole):
+    """School admins, managers, and teachers can access student records."""
+
+    required_roles = {"school_admin", "manager", "teacher"}
+
+
+def get_active_role(user) -> str | None:
+    if not user.is_authenticated:
+        return None
+    if user.is_superuser:
+        return "super_admin"
+    school = user.active_school
+    if school is None:
+        return None
+    membership = user.school_roles.filter(school=school).first()
+    return membership.role if membership else None
+
+
+def is_school_admin_or_manager(user) -> bool:
+    if user.is_superuser:
+        return True
+    role = get_active_role(user)
+    return role in {"school_admin", "manager"}
+
+
+def is_teacher_only(user) -> bool:
+    if user.is_superuser:
+        return False
+    return get_active_role(user) == "teacher"
+

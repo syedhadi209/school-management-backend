@@ -64,8 +64,34 @@ class UserRole(models.Model):
 class TeacherProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="teacher_profile")
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="teachers")
+    employee_id = models.CharField(max_length=30, blank=True)
     joining_date = models.DateField(null=True, blank=True)
     qualification = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["school", "employee_id"],
+                name="unique_teacher_employee_id_per_school",
+                condition=~models.Q(employee_id=""),
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+
+        from core.identifiers import next_readable_id
+
+        if not self.employee_id and self.school_id:
+            with transaction.atomic():
+                self.employee_id = next_readable_id(
+                    TeacherProfile.objects.select_for_update(),
+                    field_name="employee_id",
+                    prefix="TCH",
+                    school_id=self.school_id,
+                )
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
 
 class ParentProfile(models.Model):

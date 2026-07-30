@@ -5,15 +5,28 @@ class ClassLevel(models.Model):
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="class_levels")
     academic_year = models.ForeignKey("schools.AcademicYear", on_delete=models.CASCADE, related_name="class_levels")
     name = models.CharField(max_length=100)
+    order = models.PositiveIntegerField(default=1)
+    is_board_class = models.BooleanField(
+        default=False,
+        help_text="When enabled, students in this class can have a board examination roll number.",
+    )
 
     class Meta:
         unique_together = ("school", "academic_year", "name")
+        ordering = ["order", "name"]
 
 
 class Section(models.Model):
+    SHIFT_CHOICES = (
+        ("mwf", "MWF"),
+        ("tthf", "TTHF"),
+        ("daily", "Daily"),
+    )
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="sections")
     class_level = models.ForeignKey(ClassLevel, on_delete=models.CASCADE, related_name="sections")
     name = models.CharField(max_length=50)
+    capacity = models.PositiveIntegerField(default=30)
+    shift = models.CharField(max_length=10, choices=SHIFT_CHOICES, default="daily")
     class_teacher = models.ForeignKey(
         "accounts.TeacherProfile",
         on_delete=models.SET_NULL,
