@@ -1,6 +1,20 @@
 from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
-from django.db import models
+from django.db import models, transaction
+
+
+def teacher_profile_image_path(instance: "TeacherProfile", filename: str) -> str:
+    from uuid import uuid4
+
+    school_id = instance.school_id or "unknown"
+    return f"profile-images/teachers/school-{school_id}/{uuid4().hex}.webp"
+
+
+def user_profile_image_path(instance: "User", filename: str) -> str:
+    from uuid import uuid4
+
+    school_id = instance.active_school_id or "unknown"
+    return f"profile-images/users/school-{school_id}/{uuid4().hex}.webp"
 
 
 class UserManager(BaseUserManager):
@@ -32,6 +46,7 @@ class User(AbstractUser):
     active_school = models.ForeignKey(
         "schools.School", null=True, blank=True, on_delete=models.SET_NULL, related_name="active_users"
     )
+    profile_image = models.ImageField(upload_to=user_profile_image_path, blank=True)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []
@@ -39,6 +54,14 @@ class User(AbstractUser):
 
     def __str__(self) -> str:
         return self.email
+
+    def delete(self, *args, **kwargs):
+        image_name = self.profile_image.name
+        image_storage = self.profile_image.storage if image_name else None
+        response = super().delete(*args, **kwargs)
+        if image_name and image_storage is not None:
+            transaction.on_commit(lambda: image_storage.delete(image_name))
+        return response
 
 
 class RoleChoices(models.TextChoices):
@@ -86,6 +109,10 @@ class TeacherProfile(models.Model):
     address = models.TextField(blank=True)
     cnic = models.CharField(max_length=20, blank=True)
     phone_number = models.CharField(max_length=30, blank=True)
+    profile_image = models.ImageField(
+        upload_to=teacher_profile_image_path,
+        blank=True,
+    )
     subjects_taught = models.ManyToManyField(
         "academics.Subject",
         blank=True,
@@ -122,6 +149,14 @@ class TeacherProfile(models.Model):
                 )
                 return super().save(*args, **kwargs)
         return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        image_name = self.profile_image.name
+        image_storage = self.profile_image.storage if image_name else None
+        response = super().delete(*args, **kwargs)
+        if image_name and image_storage is not None:
+            transaction.on_commit(lambda: image_storage.delete(image_name))
+        return response
 
 
 class ParentProfile(models.Model):

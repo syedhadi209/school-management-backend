@@ -3,6 +3,13 @@ from django.db import models, transaction
 from core.identifiers import next_readable_id
 
 
+def student_profile_image_path(instance: "Student", filename: str) -> str:
+    from uuid import uuid4
+
+    school_id = instance.school_id or "unknown"
+    return f"profile-images/students/school-{school_id}/{uuid4().hex}.webp"
+
+
 class Student(models.Model):
     STATUS_CHOICES = (
         ("active", "Active"),
@@ -38,6 +45,7 @@ class Student(models.Model):
     father_cnic = models.CharField(max_length=20, blank=True)
     mother_cnic = models.CharField(max_length=20, blank=True)
     address = models.TextField(blank=True)
+    profile_image = models.ImageField(upload_to=student_profile_image_path, blank=True)
     region = models.CharField(max_length=100, blank=True)
     admission_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
@@ -74,6 +82,14 @@ class Student(models.Model):
 
     def __str__(self) -> str:
         return f"{self.first_name} {self.last_name}".strip()
+
+    def delete(self, *args, **kwargs):
+        image_name = self.profile_image.name
+        image_storage = self.profile_image.storage if image_name else None
+        response = super().delete(*args, **kwargs)
+        if image_name and image_storage is not None:
+            transaction.on_commit(lambda: image_storage.delete(image_name))
+        return response
 
 
 class ParentStudentLink(models.Model):

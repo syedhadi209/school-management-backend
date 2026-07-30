@@ -101,6 +101,49 @@ STATIC_URL = "static/"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+FILE_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
+
+_bucket_env = {
+    "bucket_name": os.getenv("BUCKET"),
+    "access_key": os.getenv("ACCESS_KEY_ID"),
+    "secret_key": os.getenv("SECRET_ACCESS_KEY"),
+    "endpoint_url": os.getenv("ENDPOINT"),
+    "region_name": os.getenv("REGION"),
+}
+_has_bucket_storage = all(_bucket_env.values())
+
+if _has_bucket_storage:
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.s3.S3Storage",
+            "OPTIONS": {
+                **_bucket_env,
+                "default_acl": None,
+                "file_overwrite": False,
+                "querystring_auth": True,
+                "querystring_expire": int(os.getenv("S3_URL_EXPIRY_SECONDS", "3600")),
+                "addressing_style": os.getenv("S3_ADDRESSING_STYLE", "virtual"),
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+else:
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {
+                "location": MEDIA_ROOT,
+                "base_url": MEDIA_URL,
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",

@@ -1,8 +1,13 @@
 from datetime import date
+from io import BytesIO
+import shutil
+import tempfile
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
+from PIL import Image
 
 from accounts.models import RoleChoices, TeacherProfile, UserRole
 from academics.models import ClassLevel, Section
@@ -357,3 +362,187 @@ class FamilyFieldsAndParentProvisioningTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("parent_email", response.data)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
+class StudentProfileImageTests(TestCase):
+    def setUp(self):
+        self._media_dir = tempfile.mkdtemp(prefix="students-media-")
+        self._storage_override = override_settings(
+            STORAGES={
+                "default": {
+                    "BACKEND": "django.core.files.storage.FileSystemStorage",
+                    "OPTIONS": {"location": self._media_dir, "base_url": "/media/"},
+                },
+                "staticfiles": {
+                    "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+                },
+            }
+        )
+        self._storage_override.enable()
+
+        self.client = APIClient()
+        self.school = School.objects.create(name="Image School", slug="image-school")
+        self.year = AcademicYear.objects.create(
+            school=self.school,
+            name="2026-2027",
+            start_date=date(2026, 4, 1),
+            end_date=date(2027, 3, 31),
+            is_active=True,
+        )
+        self.class_level = ClassLevel.objects.create(
+            school=self.school,
+            academic_year=self.year,
+            name="Class 3",
+            order=3,
+        )
+        self.section = Section.objects.create(school=self.school, class_level=self.class_level, name="A")
+
+        self.admin = User.objects.create_user(
+            email="admin@student-image.test",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        self.teacher_user = User.objects.create_user(
+            email="teacher@student-image.test",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        UserRole.objects.create(user=self.admin, school=self.school, role=RoleChoices.SCHOOL_ADMIN)
+        UserRole.objects.create(user=self.teacher_user, school=self.school, role=RoleChoices.TEACHER)
+        teacher_profile = TeacherProfile.objects.create(user=self.teacher_user, school=self.school)
+        self.section.class_teacher = teacher_profile
+        self.section.save(update_fields=["class_teacher"])
+
+    def tearDown(self):
+        self._storage_override.disable()
+        shutil.rmtree(self._media_dir, ignore_errors=True)
+        super().tearDown()
+
+    def _image_file(self, name: str = "avatar.png", image_format: str = "PNG"):
+        buffer = BytesIO()
+        Image.new("RGB", (96, 96), color=(24, 120, 220)).save(buffer, format=image_format)
+        return SimpleUploadedFile(name, buffer.getvalue(), content_type=f"image/{image_format.lower()}")
+
+    def test_admin_can_upload_profile_image_on_create(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Adeel",
+                "last_name": "Khan",
+                "status": "active",
+                "section": self.section.id,
+                "profile_image": self._image_file(),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 201)
+        student = Student.objects.get(pk=response.data["id"])
+        self.assertTrue(student.profile_image.name.startswith("profile-images/students/school-"))
+        self.assertTrue(student.profile_image.name.endswith(".webp"))
+        self.assertIn(".webp", response.data["profile_image"])
+
+    def test_invalid_profile_image_type_is_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Invalid",
+                "status": "active",
+                "section": self.section.id,
+                "profile_image": SimpleUploadedFile("bad.txt", b"hello", content_type="text/plain"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("profile_image", response.data)
+
+    def test_oversized_profile_image_is_rejected(self):
+        self.client.force_authenticate(user=self.admin)
+        too_big = SimpleUploadedFile(
+            "too-big.png",
+            b"x" * (5 * 1024 * 1024 + 1),
+            content_type="image/png",
+        )
+        response = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Large",
+                "status": "active",
+                "section": self.section.id,
+                "profile_image": too_big,
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("profile_image", response.data)
+
+    def test_replacing_profile_image_removes_old_object(self):
+        self.client.force_authenticate(user=self.admin)
+        created = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Replace",
+                "status": "active",
+                "section": self.section.id,
+                "profile_image": self._image_file("first.png"),
+            },
+            format="multipart",
+        )
+        student = Student.objects.get(pk=created.data["id"])
+        old_name = student.profile_image.name
+        storage = student.profile_image.storage
+
+        with self.captureOnCommitCallbacks(execute=True):
+            updated = self.client.patch(
+                f"/api/v1/students/{student.id}/",
+                {"profile_image": self._image_file("second.png")},
+                format="multipart",
+            )
+        self.assertEqual(updated.status_code, 200)
+        student.refresh_from_db()
+        self.assertNotEqual(student.profile_image.name, old_name)
+        self.assertFalse(storage.exists(old_name))
+
+    def test_clearing_profile_image_deletes_file(self):
+        self.client.force_authenticate(user=self.admin)
+        created = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Clear",
+                "status": "active",
+                "section": self.section.id,
+                "profile_image": self._image_file("clear.png"),
+            },
+            format="multipart",
+        )
+        student = Student.objects.get(pk=created.data["id"])
+        old_name = student.profile_image.name
+        storage = student.profile_image.storage
+
+        with self.captureOnCommitCallbacks(execute=True):
+            updated = self.client.patch(
+                f"/api/v1/students/{student.id}/",
+                {"profile_image_clear": True},
+                format="multipart",
+            )
+        self.assertEqual(updated.status_code, 200)
+        student.refresh_from_db()
+        self.assertEqual(student.profile_image.name, "")
+        self.assertFalse(storage.exists(old_name))
+
+    def test_teacher_cannot_edit_profile_image(self):
+        student = Student.objects.create(
+            school=self.school,
+            section=self.section,
+            first_name="Protected",
+            last_name="Student",
+        )
+        self.client.force_authenticate(user=self.teacher_user)
+        response = self.client.patch(
+            f"/api/v1/students/{student.id}/",
+            {"profile_image": self._image_file()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 403)

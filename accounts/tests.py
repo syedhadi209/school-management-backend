@@ -1,9 +1,14 @@
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
+import shutil
+import tempfile
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APIClient
+from PIL import Image
 
 from academics.models import ClassLevel, Section, Subject, TeacherSubjectAssignment
 from accounts.models import RoleChoices, TeacherProfile, UserRole
@@ -281,3 +286,335 @@ class TeacherEmploymentTests(TestCase):
         self.assertEqual(response.data["students"], 2)
         self.assertEqual(response.data["subjects"], 2)
         self.assertEqual(response.data["incharge_sections"], 0)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
+class ManagerAccountTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.school = School.objects.create(name="Manager School", slug="manager-school")
+        self.other_school = School.objects.create(name="Other Manager School", slug="other-manager-school")
+        self.admin = User.objects.create_user(
+            email="admin@manager.test",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        UserRole.objects.create(
+            user=self.admin,
+            school=self.school,
+            role=RoleChoices.SCHOOL_ADMIN,
+        )
+        self.client.force_authenticate(user=self.admin)
+
+    def test_school_admin_can_create_and_update_manager_account(self):
+        created = self.client.post(
+            "/api/v1/accounts/managers/",
+            {
+                "first_name": "Ayesha",
+                "last_name": "Khan",
+                "email": "ayesha.manager@example.com",
+                "password": "DemoPass123!",
+            },
+            format="json",
+        )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.data["role"], RoleChoices.MANAGER)
+        self.assertEqual(created.data["full_name"], "Ayesha Khan")
+        self.assertEqual(created.data["email"], "ayesha.manager@example.com")
+        membership = UserRole.objects.get(pk=created.data["id"])
+        self.assertEqual(membership.school, self.school)
+        self.assertEqual(membership.user.active_school, self.school)
+        self.assertTrue(membership.user.check_password("DemoPass123!"))
+
+        updated = self.client.patch(
+            f"/api/v1/accounts/managers/{membership.id}/",
+            {
+                "first_name": "Aisha",
+                "last_name": "Ahmed",
+                "is_active": False,
+            },
+            format="json",
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.data["full_name"], "Aisha Ahmed")
+        self.assertFalse(updated.data["is_active"])
+
+    def test_manager_list_is_scoped_to_active_school(self):
+        local_user = User.objects.create_user(
+            email="local.manager@example.com",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        local_role = UserRole.objects.create(
+            user=local_user,
+            school=self.school,
+            role=RoleChoices.MANAGER,
+        )
+        other_user = User.objects.create_user(
+            email="other.manager@example.com",
+            password="DemoPass123!",
+            active_school=self.other_school,
+        )
+        UserRole.objects.create(
+            user=other_user,
+            school=self.other_school,
+            role=RoleChoices.MANAGER,
+        )
+
+        response = self.client.get("/api/v1/accounts/managers/")
+
+        self.assertEqual(response.status_code, 200)
+        ids = {item["id"] for item in response.data["results"]}
+        self.assertEqual(ids, {local_role.id})
+
+    def test_deleting_standalone_manager_removes_login_account(self):
+        created = self.client.post(
+            "/api/v1/accounts/managers/",
+            {
+                "first_name": "Delete",
+                "last_name": "Manager",
+                "email": "delete.manager@example.com",
+                "password": "DemoPass123!",
+            },
+            format="json",
+        )
+        user_id = created.data["user"]
+
+        deleted = self.client.delete(
+            f"/api/v1/accounts/managers/{created.data['id']}/"
+        )
+
+        self.assertEqual(deleted.status_code, 204)
+        self.assertFalse(User.objects.filter(pk=user_id).exists())
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
+class ManagerProfileImageTests(TestCase):
+    def setUp(self):
+        self._media_dir = tempfile.mkdtemp(prefix="manager-media-")
+        self._storage_override = override_settings(
+            STORAGES={
+                "default": {
+                    "BACKEND": "django.core.files.storage.FileSystemStorage",
+                    "OPTIONS": {"location": self._media_dir, "base_url": "/media/"},
+                },
+                "staticfiles": {
+                    "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+                },
+            }
+        )
+        self._storage_override.enable()
+
+        self.client = APIClient()
+        self.school = School.objects.create(name="Manager Image School", slug="manager-image-school")
+        self.admin = User.objects.create_user(
+            email="admin@manager-image.test",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        UserRole.objects.create(user=self.admin, school=self.school, role=RoleChoices.SCHOOL_ADMIN)
+        self.client.force_authenticate(user=self.admin)
+
+    def tearDown(self):
+        self._storage_override.disable()
+        shutil.rmtree(self._media_dir, ignore_errors=True)
+        super().tearDown()
+
+    def _image_file(self, name: str = "manager.png", image_format: str = "PNG"):
+        buffer = BytesIO()
+        Image.new("RGB", (96, 96), color=(40, 160, 90)).save(buffer, format=image_format)
+        return SimpleUploadedFile(name, buffer.getvalue(), content_type=f"image/{image_format.lower()}")
+
+    def test_school_admin_can_create_manager_with_profile_image(self):
+        response = self.client.post(
+            "/api/v1/accounts/managers/",
+            {
+                "first_name": "Ayesha",
+                "last_name": "Khan",
+                "email": "ayesha.image@example.com",
+                "password": "DemoPass123!",
+                "profile_image": self._image_file(),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 201)
+        membership = UserRole.objects.get(pk=response.data["id"])
+        self.assertTrue(membership.user.profile_image.name.startswith("profile-images/users/school-"))
+        self.assertTrue(membership.user.profile_image.name.endswith(".webp"))
+        self.assertIn(".webp", response.data["profile_image"])
+
+    def test_replacing_and_clearing_manager_profile_image(self):
+        created = self.client.post(
+            "/api/v1/accounts/managers/",
+            {
+                "first_name": "Replace",
+                "last_name": "Manager",
+                "email": "replace.manager.image@example.com",
+                "password": "DemoPass123!",
+                "profile_image": self._image_file("first.png"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(created.status_code, 201)
+        manager_id = created.data["id"]
+        membership = UserRole.objects.get(pk=manager_id)
+        old_name = membership.user.profile_image.name
+        storage = membership.user.profile_image.storage
+
+        with self.captureOnCommitCallbacks(execute=True):
+            replaced = self.client.patch(
+                f"/api/v1/accounts/managers/{manager_id}/",
+                {"profile_image": self._image_file("second.png")},
+                format="multipart",
+            )
+        self.assertEqual(replaced.status_code, 200)
+        membership.user.refresh_from_db()
+        self.assertNotEqual(membership.user.profile_image.name, old_name)
+        self.assertFalse(storage.exists(old_name))
+        second_name = membership.user.profile_image.name
+
+        with self.captureOnCommitCallbacks(execute=True):
+            cleared = self.client.patch(
+                f"/api/v1/accounts/managers/{manager_id}/",
+                {"profile_image_clear": True},
+                format="multipart",
+            )
+        self.assertEqual(cleared.status_code, 200)
+        membership.user.refresh_from_db()
+        self.assertEqual(membership.user.profile_image.name, "")
+        self.assertFalse(storage.exists(second_name))
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
+class TeacherProfileImageTests(TestCase):
+    def setUp(self):
+        self._media_dir = tempfile.mkdtemp(prefix="teacher-media-")
+        self._storage_override = override_settings(
+            STORAGES={
+                "default": {
+                    "BACKEND": "django.core.files.storage.FileSystemStorage",
+                    "OPTIONS": {"location": self._media_dir, "base_url": "/media/"},
+                },
+                "staticfiles": {
+                    "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+                },
+            }
+        )
+        self._storage_override.enable()
+
+        self.client = APIClient()
+        self.school = School.objects.create(name="Teacher Image School", slug="teacher-image-school")
+        self.admin = User.objects.create_user(
+            email="admin@teacher-image.test",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        self.manager = User.objects.create_user(
+            email="manager@teacher-image.test",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        UserRole.objects.create(user=self.admin, school=self.school, role=RoleChoices.SCHOOL_ADMIN)
+        UserRole.objects.create(user=self.manager, school=self.school, role=RoleChoices.MANAGER)
+        self.client.force_authenticate(user=self.admin)
+
+    def tearDown(self):
+        self._storage_override.disable()
+        shutil.rmtree(self._media_dir, ignore_errors=True)
+        super().tearDown()
+
+    def _image_file(self, name: str = "teacher.png", image_format: str = "PNG"):
+        buffer = BytesIO()
+        Image.new("RGB", (96, 96), color=(220, 80, 40)).save(buffer, format=image_format)
+        return SimpleUploadedFile(name, buffer.getvalue(), content_type=f"image/{image_format.lower()}")
+
+    def test_school_admin_can_create_teacher_with_profile_image(self):
+        response = self.client.post(
+            "/api/v1/accounts/teachers/",
+            {
+                "first_name": "Sara",
+                "email": "sara.image@example.com",
+                "password": "DemoPass123!",
+                "profile_image": self._image_file(),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 201)
+        profile = TeacherProfile.objects.get(pk=response.data["id"])
+        self.assertTrue(profile.profile_image.name.startswith("profile-images/teachers/school-"))
+        self.assertTrue(profile.profile_image.name.endswith(".webp"))
+        self.assertIn(".webp", response.data["profile_image"])
+
+    def test_invalid_teacher_profile_image_is_rejected(self):
+        response = self.client.post(
+            "/api/v1/accounts/teachers/",
+            {
+                "first_name": "Bad",
+                "email": "bad.image@example.com",
+                "password": "DemoPass123!",
+                "profile_image": SimpleUploadedFile("bad.txt", b"not image", content_type="text/plain"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("profile_image", response.data)
+
+    def test_replacing_and_clearing_teacher_profile_image(self):
+        created = self.client.post(
+            "/api/v1/accounts/teachers/",
+            {
+                "first_name": "Replace",
+                "email": "replace.image@example.com",
+                "password": "DemoPass123!",
+                "profile_image": self._image_file("first.png"),
+            },
+            format="multipart",
+        )
+        self.assertEqual(created.status_code, 201)
+        teacher_id = created.data["id"]
+        profile = TeacherProfile.objects.get(pk=teacher_id)
+        old_name = profile.profile_image.name
+        storage = profile.profile_image.storage
+
+        with self.captureOnCommitCallbacks(execute=True):
+            replaced = self.client.patch(
+                f"/api/v1/accounts/teachers/{teacher_id}/",
+                {"profile_image": self._image_file("second.png")},
+                format="multipart",
+            )
+        self.assertEqual(replaced.status_code, 200)
+        profile.refresh_from_db()
+        self.assertNotEqual(profile.profile_image.name, old_name)
+        self.assertFalse(storage.exists(old_name))
+        second_name = profile.profile_image.name
+
+        with self.captureOnCommitCallbacks(execute=True):
+            cleared = self.client.patch(
+                f"/api/v1/accounts/teachers/{teacher_id}/",
+                {"profile_image_clear": True},
+                format="multipart",
+            )
+        self.assertEqual(cleared.status_code, 200)
+        profile.refresh_from_db()
+        self.assertEqual(profile.profile_image.name, "")
+        self.assertFalse(storage.exists(second_name))
+
+    def test_manager_cannot_modify_teacher_profile_images(self):
+        created = self.client.post(
+            "/api/v1/accounts/teachers/",
+            {
+                "first_name": "Protected",
+                "email": "protected.image@example.com",
+                "password": "DemoPass123!",
+            },
+            format="json",
+        )
+        teacher_id = created.data["id"]
+        self.client.force_authenticate(user=self.manager)
+        denied = self.client.patch(
+            f"/api/v1/accounts/teachers/{teacher_id}/",
+            {"profile_image": self._image_file()},
+            format="multipart",
+        )
+        self.assertEqual(denied.status_code, 403)

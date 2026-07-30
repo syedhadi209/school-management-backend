@@ -3,6 +3,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from django.db import transaction
 from django.db.models import Q
 
 from academics.models import Section
@@ -10,9 +11,10 @@ from core.permissions import IsSchoolAdmin, IsTeacher
 from core.viewsets import TenantScopedModelViewSet
 from students.models import Student
 
-from .models import ParentProfile, TeacherProfile, UserRole
+from .models import ParentProfile, RoleChoices, TeacherProfile, UserRole
 from .serializers import (
     AppTokenObtainPairSerializer,
+    ManagerAccountSerializer,
     ParentProfileSerializer,
     SchoolOwnerRegisterSerializer,
     TeacherProfileSerializer,
@@ -79,6 +81,25 @@ class UserRoleViewSet(TenantScopedModelViewSet):
     permission_classes = [IsAuthenticated, IsSchoolAdmin]
     search_fields = ["user__email", "role"]
     filterset_fields = ["role", "user"]
+
+
+class ManagerAccountViewSet(TenantScopedModelViewSet):
+    queryset = UserRole.objects.select_related("user", "school").filter(
+        role=RoleChoices.MANAGER
+    )
+    serializer_class = ManagerAccountSerializer
+    permission_classes = [IsAuthenticated, IsSchoolAdmin]
+    search_fields = ["user__first_name", "user__last_name", "user__email"]
+    filterset_fields = ["user__is_active"]
+    ordering_fields = ["user__first_name", "user__date_joined"]
+    ordering = ["user__first_name"]
+
+    def perform_destroy(self, instance):
+        user = instance.user
+        with transaction.atomic():
+            instance.delete()
+            if not user.school_roles.exists():
+                user.delete()
 
 
 class TeacherProfileViewSet(TenantScopedModelViewSet):

@@ -3,6 +3,7 @@ from rest_framework import serializers
 from academics.models import Section
 from accounts.parent_services import provision_parent_for_student
 from core.cnic import validate_cnic
+from core.image_uploads import optimize_profile_image, schedule_storage_delete
 
 from .models import ParentStudentLink, Student
 
@@ -13,6 +14,7 @@ class StudentSerializer(serializers.ModelSerializer):
     class_level_name = serializers.CharField(source="section.class_level.name", read_only=True, default=None)
     is_board_class = serializers.SerializerMethodField()
     parent_invite_pending = serializers.SerializerMethodField()
+    profile_image_clear = serializers.BooleanField(write_only=True, required=False, default=False)
 
     def get_full_name(self, obj: Student) -> str:
         return f"{obj.first_name} {obj.last_name}".strip()
@@ -47,6 +49,7 @@ class StudentSerializer(serializers.ModelSerializer):
             "address": {"required": False, "allow_blank": True},
             "region": {"required": False, "allow_blank": True},
             "gender": {"required": False, "allow_blank": True},
+            "profile_image": {"required": False, "allow_null": True},
         }
 
     def validate_board_roll_number(self, value: str) -> str:
@@ -60,6 +63,9 @@ class StudentSerializer(serializers.ModelSerializer):
 
     def validate_parent_email(self, value: str) -> str:
         return (value or "").strip().lower()
+
+    def validate_profile_image(self, value):
+        return optimize_profile_image(value)
 
     def validate_section(self, section: Section | None) -> Section | None:
         if section is None:
@@ -120,12 +126,23 @@ class StudentSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        validated_data.pop("profile_image_clear", None)
         student = super().create(validated_data)
         self._sync_parent(student)
         return student
 
     def update(self, instance, validated_data):
+        clear_profile_image = validated_data.pop("profile_image_clear", False)
+        old_image_name = instance.profile_image.name
+        old_image_storage = instance.profile_image.storage if old_image_name else None
+
+        if clear_profile_image:
+            validated_data["profile_image"] = None
+
         student = super().update(instance, validated_data)
+        new_image_name = student.profile_image.name
+        if old_image_name and old_image_name != new_image_name and old_image_storage is not None:
+            schedule_storage_delete(old_image_storage, old_image_name)
         self._sync_parent(student)
         return student
 
