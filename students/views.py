@@ -15,7 +15,17 @@ class StudentViewSet(TenantScopedModelViewSet):
     queryset = Student.objects.select_related("section", "section__class_level").all()
     serializer_class = StudentSerializer
     permission_classes = [IsAuthenticated, IsStudentStaff]
-    search_fields = ["first_name", "last_name", "roll_number", "board_roll_number", "region"]
+    search_fields = [
+        "first_name",
+        "last_name",
+        "roll_number",
+        "board_roll_number",
+        "region",
+        "father_name",
+        "mother_name",
+        "parent_email",
+        "guardian_phone",
+    ]
     filterset_fields = ["status", "section", "gender", "section__class_level__is_board_class"]
     ordering_fields = ["first_name", "admission_date", "roll_number", "board_roll_number"]
     ordering = ["first_name"]

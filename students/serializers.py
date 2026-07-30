@@ -1,6 +1,8 @@
 from rest_framework import serializers
 
 from academics.models import Section
+from accounts.parent_services import provision_parent_for_student
+from core.cnic import validate_cnic
 
 from .models import ParentStudentLink, Student
 
@@ -10,6 +12,7 @@ class StudentSerializer(serializers.ModelSerializer):
     section_name = serializers.CharField(source="section.name", read_only=True, default=None)
     class_level_name = serializers.CharField(source="section.class_level.name", read_only=True, default=None)
     is_board_class = serializers.SerializerMethodField()
+    parent_invite_pending = serializers.SerializerMethodField()
 
     def get_full_name(self, obj: Student) -> str:
         return f"{obj.first_name} {obj.last_name}".strip()
@@ -20,13 +23,43 @@ class StudentSerializer(serializers.ModelSerializer):
             return False
         return bool(section.class_level.is_board_class)
 
+    def get_parent_invite_pending(self, obj: Student) -> bool:
+        link = obj.parent_links.select_related("parent__user").first()
+        if link is None:
+            return False
+        return not link.parent.user.has_usable_password()
+
     class Meta:
         model = Student
         fields = "__all__"
         read_only_fields = ("school", "roll_number")
+        extra_kwargs = {
+            "board_roll_number": {"required": False, "allow_blank": True},
+            "last_name": {"required": False, "allow_blank": True},
+            "guardian_phone": {"required": False, "allow_blank": True},
+            "parent_alternate_phone": {"required": False, "allow_blank": True},
+            "parent_email": {"required": False, "allow_blank": True},
+            "parent_occupation": {"required": False, "allow_blank": True},
+            "father_name": {"required": False, "allow_blank": True},
+            "mother_name": {"required": False, "allow_blank": True},
+            "father_cnic": {"required": False, "allow_blank": True},
+            "mother_cnic": {"required": False, "allow_blank": True},
+            "address": {"required": False, "allow_blank": True},
+            "region": {"required": False, "allow_blank": True},
+            "gender": {"required": False, "allow_blank": True},
+        }
 
     def validate_board_roll_number(self, value: str) -> str:
         return (value or "").strip()
+
+    def validate_father_cnic(self, value: str) -> str:
+        return validate_cnic(value)
+
+    def validate_mother_cnic(self, value: str) -> str:
+        return validate_cnic(value)
+
+    def validate_parent_email(self, value: str) -> str:
+        return (value or "").strip().lower()
 
     def validate_section(self, section: Section | None) -> Section | None:
         if section is None:
@@ -50,7 +83,11 @@ class StudentSerializer(serializers.ModelSerializer):
         if board_roll:
             if section is None:
                 raise serializers.ValidationError(
-                    {"board_roll_number": "Assign the student to a board class section before setting a board roll number."}
+                    {
+                        "board_roll_number": (
+                            "Assign the student to a board class section before setting a board roll number."
+                        )
+                    }
                 )
             class_level = section.class_level
             if not class_level.is_board_class:
@@ -73,10 +110,37 @@ class StudentSerializer(serializers.ModelSerializer):
                 duplicate_qs = duplicate_qs.exclude(pk=instance.pk)
             if duplicate_qs.exists():
                 raise serializers.ValidationError(
-                    {"board_roll_number": "This board roll number is already used by another student in this school."}
+                    {
+                        "board_roll_number": (
+                            "This board roll number is already used by another student in this school."
+                        )
+                    }
                 )
 
         return attrs
+
+    def create(self, validated_data):
+        student = super().create(validated_data)
+        self._sync_parent(student)
+        return student
+
+    def update(self, instance, validated_data):
+        student = super().update(instance, validated_data)
+        self._sync_parent(student)
+        return student
+
+    def _sync_parent(self, student: Student) -> None:
+        request = self.context.get("request")
+        school = student.school or getattr(getattr(request, "user", None), "active_school", None)
+        if school is None:
+            return
+        provision_parent_for_student(
+            student=student,
+            email=student.parent_email,
+            school=school,
+            relation="guardian",
+            first_name=student.father_name or student.mother_name or "",
+        )
 
 
 class ParentStudentLinkSerializer(serializers.ModelSerializer):

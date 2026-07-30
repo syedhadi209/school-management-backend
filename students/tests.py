@@ -194,3 +194,156 @@ class BoardClassEligibilityTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 403)
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
+class FamilyFieldsAndParentProvisioningTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.school = School.objects.create(name="Family School", slug="family-school")
+        self.other_school = School.objects.create(name="Other Family School", slug="other-family")
+        self.year = AcademicYear.objects.create(
+            school=self.school,
+            name="2026-2027",
+            start_date=date(2026, 4, 1),
+            end_date=date(2027, 3, 31),
+            is_active=True,
+        )
+        self.class_level = ClassLevel.objects.create(
+            school=self.school,
+            academic_year=self.year,
+            name="Class 1",
+            order=1,
+        )
+        self.section = Section.objects.create(
+            school=self.school,
+            class_level=self.class_level,
+            name="A",
+        )
+        self.admin = User.objects.create_user(
+            email="admin@family.test",
+            password="DemoPass123!",
+            active_school=self.school,
+        )
+        UserRole.objects.create(user=self.admin, school=self.school, role=RoleChoices.SCHOOL_ADMIN)
+
+    def test_cnic_is_normalised_and_validated(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Ali",
+                "last_name": "Khan",
+                "status": "active",
+                "section": self.section.id,
+                "father_cnic": "35202-1234567-1",
+                "mother_cnic": "3520212345672",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["father_cnic"], "3520212345671")
+        self.assertEqual(response.data["mother_cnic"], "3520212345672")
+
+        bad = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Sara",
+                "last_name": "Khan",
+                "status": "active",
+                "father_cnic": "12345",
+            },
+            format="json",
+        )
+        self.assertEqual(bad.status_code, 400)
+        self.assertIn("father_cnic", bad.data)
+
+    def test_siblings_can_share_cnic_and_parent_email(self):
+        self.client.force_authenticate(user=self.admin)
+        shared = {
+            "father_cnic": "3520211111111",
+            "mother_cnic": "3520222222222",
+            "parent_email": "shared.parent@family.test",
+            "father_name": "Imran Khan",
+            "status": "active",
+            "section": self.section.id,
+        }
+        first = self.client.post(
+            "/api/v1/students/",
+            {"first_name": "Child", "last_name": "One", **shared},
+            format="json",
+        )
+        second = self.client.post(
+            "/api/v1/students/",
+            {"first_name": "Child", "last_name": "Two", **shared},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+
+        from accounts.models import ParentProfile
+        from students.models import ParentStudentLink
+
+        parent_user = User.objects.get(email="shared.parent@family.test")
+        self.assertFalse(parent_user.has_usable_password())
+        profile = ParentProfile.objects.get(user=parent_user)
+        self.assertEqual(ParentStudentLink.objects.filter(parent=profile).count(), 2)
+
+    def test_re_saving_student_does_not_duplicate_parent_link(self):
+        self.client.force_authenticate(user=self.admin)
+        created = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Only",
+                "last_name": "Child",
+                "status": "active",
+                "parent_email": "once@family.test",
+                "father_name": "Dad",
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        student_id = created.data["id"]
+        updated = self.client.patch(
+            f"/api/v1/students/{student_id}/",
+            {"parent_email": "once@family.test", "region": "Lahore"},
+            format="json",
+        )
+        self.assertEqual(updated.status_code, 200)
+
+        from students.models import ParentStudentLink
+
+        self.assertEqual(ParentStudentLink.objects.filter(student_id=student_id).count(), 1)
+
+    def test_parent_email_conflict_across_schools(self):
+        other_admin = User.objects.create_user(
+            email="admin@other-family.test",
+            password="DemoPass123!",
+            active_school=self.other_school,
+        )
+        UserRole.objects.create(user=other_admin, school=self.other_school, role=RoleChoices.SCHOOL_ADMIN)
+
+        other_parent = User.objects.create_user(
+            email="conflict@family.test",
+            password="unused",
+            active_school=self.other_school,
+        )
+        other_parent.set_unusable_password()
+        other_parent.save()
+        from accounts.models import ParentProfile
+
+        ParentProfile.objects.create(user=other_parent, school=self.other_school)
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Cross",
+                "last_name": "School",
+                "status": "active",
+                "parent_email": "conflict@family.test",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("parent_email", response.data)

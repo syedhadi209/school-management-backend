@@ -1,4 +1,5 @@
 from rest_framework.permissions import IsAuthenticated
+from django.db import transaction
 from django.db.models import Count
 
 from core.permissions import IsManager
@@ -14,6 +15,7 @@ from .serializers import (
     SubjectSerializer,
     TeacherSubjectAssignmentSerializer,
 )
+from .services import get_or_create_default_section
 
 
 class ClassLevelViewSet(TenantScopedModelViewSet):
@@ -30,7 +32,9 @@ class ClassLevelViewSet(TenantScopedModelViewSet):
         academic_year = serializer.validated_data.get("academic_year")
         if academic_year is None:
             academic_year = get_or_create_default_academic_year(school)
-        serializer.save(school=school, academic_year=academic_year)
+        with transaction.atomic():
+            class_level = serializer.save(school=school, academic_year=academic_year)
+            get_or_create_default_section(class_level)
 
 
 class SectionViewSet(TenantScopedModelViewSet):

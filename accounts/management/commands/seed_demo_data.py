@@ -172,6 +172,12 @@ class Command(BaseCommand):
                     "status": status,
                     "region": regions[idx % len(regions)],
                     "guardian_phone": f"0300{idx+1000000}",
+                    "parent_email": parent_profiles[idx % len(parent_profiles)].user.email,
+                    "father_name": f"Father of {first_name}",
+                    "mother_name": f"Mother of {first_name}",
+                    "father_cnic": f"35202{10000000 + idx:08d}",
+                    "address": f"House {idx + 1}, Demo Street, {regions[idx % len(regions)]}",
+                    "parent_occupation": ["Business", "Teacher", "Engineer", "Doctor"][idx % 4],
                     "gender": "male" if idx % 2 == 0 else "female",
                     "admission_date": date.today() - timedelta(days=30 + idx),
                 },
@@ -183,6 +189,12 @@ class Command(BaseCommand):
                 student.roll_number = ""
             student.region = regions[idx % len(regions)]
             student.guardian_phone = f"0300{idx+1000000}"
+            student.parent_email = parent_profiles[idx % len(parent_profiles)].user.email
+            student.father_name = f"Father of {first_name}"
+            student.mother_name = f"Mother of {first_name}"
+            student.father_cnic = f"35202{10000000 + idx:08d}"
+            student.address = f"House {idx + 1}, Demo Street, {regions[idx % len(regions)]}"
+            student.parent_occupation = ["Business", "Teacher", "Engineer", "Doctor"][idx % 4]
             student.gender = "male" if idx % 2 == 0 else "female"
             student.admission_date = date.today() - timedelta(days=30 + idx)
             student.save()
@@ -245,20 +257,40 @@ class Command(BaseCommand):
         inquiry_statuses = ["new", "contacted", "visited", "applied", "admitted", "rejected"]
         inquiries = []
         for idx in range(18):
+            status = inquiry_statuses[idx % len(inquiry_statuses)]
+            class_level = class_levels[idx % len(class_levels)]
+            defaults = {
+                "phone": f"0311{idx+1000000}",
+                "interested_class": class_level.name,
+                "interested_class_level": class_level,
+                "preferred_section": sections[idx % len(sections)] if status in ["applied", "admitted"] else None,
+                "source": "website" if idx % 2 == 0 else "walk_in",
+                "status": status,
+                "first_name": f"Prospect",
+                "last_name": f"{idx + 1}",
+                "gender": "male" if idx % 2 == 0 else "female",
+                "date_of_birth": date(2014, 1, 1) + timedelta(days=idx * 40),
+                "father_name": f"Father Prospect {idx + 1}",
+                "mother_name": f"Mother Prospect {idx + 1}",
+                "father_cnic": f"35203{10000000 + idx:08d}",
+                "address": f"Prospect House {idx + 1}, Demo Town",
+                "region": regions[idx % len(regions)],
+                "parent_email": f"prospect.parent{idx + 1}@demo.school",
+                "parent_phone": f"0311{idx+1000000}",
+                "notes": "Seeded inquiry",
+            }
+            if status == "applied":
+                defaults["application_date"] = date.today() - timedelta(days=idx)
+            if status == "rejected":
+                defaults["rejection_reason"] = "Did not meet age criteria"
             inquiry, _ = Inquiry.objects.get_or_create(
                 school=school,
                 full_name=f"Prospect {idx + 1}",
-                defaults={
-                    "phone": f"0311{idx+1000000}",
-                    "interested_class": class_levels[idx % len(class_levels)].name,
-                    "source": "website" if idx % 2 == 0 else "walk_in",
-                    "status": inquiry_statuses[idx % len(inquiry_statuses)],
-                },
+                defaults=defaults,
             )
-            inquiry.status = inquiry_statuses[idx % len(inquiry_statuses)]
-            inquiry.phone = f"0311{idx+1000000}"
-            inquiry.interested_class = class_levels[idx % len(class_levels)].name
-            inquiry.source = "website" if idx % 2 == 0 else "walk_in"
+            for key, value in defaults.items():
+                setattr(inquiry, key, value)
+            inquiry.status = status
             inquiry.save()
             inquiries.append(inquiry)
 
@@ -271,14 +303,27 @@ class Command(BaseCommand):
             )
 
         for idx, inquiry in enumerate(inquiries[:10]):
-            Admission.objects.get_or_create(
+            decision = "approved" if inquiry.status == "admitted" else "pending"
+            linked_student = None
+            if inquiry.status == "admitted":
+                linked_student = students[idx]
+            admission, _ = Admission.objects.get_or_create(
                 school=school,
                 inquiry=inquiry,
                 defaults={
-                    "student": students[idx] if inquiry.status in ["admitted", "applied"] else None,
-                    "decision": "approved" if inquiry.status == "admitted" else "pending",
+                    "student": linked_student,
+                    "decision": decision,
                 },
             )
+            if admission.decision != decision:
+                admission.decision = decision
+            # Avoid colliding OneToOne student links across re-seeds.
+            if linked_student and (
+                admission.student_id is None
+                or not Admission.objects.filter(student=linked_student).exclude(pk=admission.pk).exists()
+            ):
+                admission.student = linked_student
+            admission.save()
 
         exam, _ = Exam.objects.get_or_create(
             school=school,

@@ -20,7 +20,9 @@ class Student(models.Model):
         ("other", "Other"),
     )
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="students")
-    section = models.ForeignKey("academics.Section", on_delete=models.SET_NULL, null=True, blank=True, related_name="students")
+    section = models.ForeignKey(
+        "academics.Section", on_delete=models.SET_NULL, null=True, blank=True, related_name="students"
+    )
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100, blank=True)
     roll_number = models.CharField(max_length=30, blank=True)
@@ -28,6 +30,14 @@ class Student(models.Model):
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True)
     date_of_birth = models.DateField(null=True, blank=True)
     guardian_phone = models.CharField(max_length=30, blank=True)
+    parent_alternate_phone = models.CharField(max_length=30, blank=True)
+    parent_email = models.EmailField(blank=True)
+    parent_occupation = models.CharField(max_length=150, blank=True)
+    father_name = models.CharField(max_length=150, blank=True)
+    mother_name = models.CharField(max_length=150, blank=True)
+    father_cnic = models.CharField(max_length=20, blank=True)
+    mother_cnic = models.CharField(max_length=20, blank=True)
+    address = models.TextField(blank=True)
     region = models.CharField(max_length=100, blank=True)
     admission_date = models.DateField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
@@ -49,6 +59,8 @@ class Student(models.Model):
     def save(self, *args, **kwargs):
         if self.board_roll_number:
             self.board_roll_number = self.board_roll_number.strip()
+        if self.parent_email:
+            self.parent_email = self.parent_email.strip().lower()
         if not self.roll_number and self.school_id:
             with transaction.atomic():
                 self.roll_number = next_readable_id(
