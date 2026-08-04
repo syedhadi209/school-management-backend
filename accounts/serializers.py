@@ -21,6 +21,24 @@ class SchoolOwnerRegisterSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, min_length=8)
 
+    def validate_email(self, value: str) -> str:
+        email = value.strip().lower()
+        if User.objects.filter(email__iexact=email).exists():
+            raise serializers.ValidationError("An account with this email is already registered.")
+        return email
+
+    def validate_school_name(self, value: str) -> str:
+        school_name = value.strip()
+        if not school_name:
+            raise serializers.ValidationError("School name is required.")
+        slug = slugify(school_name)
+        if not slug:
+            raise serializers.ValidationError("Enter a school name that includes letters or numbers.")
+        if School.objects.filter(slug=slug).exists() or School.objects.filter(name__iexact=school_name).exists():
+            raise serializers.ValidationError("A school with this name is already registered.")
+        return school_name
+
+    @transaction.atomic
     def create(self, validated_data):
         school_name = validated_data["school_name"]
         school = School.objects.create(name=school_name, slug=slugify(school_name))

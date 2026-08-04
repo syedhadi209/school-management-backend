@@ -5,7 +5,15 @@ from accounts.models import TeacherProfile
 from schools.services import get_or_create_default_academic_year
 
 from .models import TimetableEntry
-from .services import DAY_LABELS, describe_entry, overlapping_entries, section_label
+from .services import (
+    DAY_LABELS,
+    describe_same_slot_conflict,
+    describe_section_conflict,
+    describe_teacher_conflict,
+    find_section_overlap,
+    find_teacher_overlap,
+    section_label,
+)
 
 
 class TimetableEntrySerializer(serializers.ModelSerializer):
@@ -133,18 +141,49 @@ class TimetableEntrySerializer(serializers.ModelSerializer):
             and start_time is not None
             and end_time is not None
         ):
-            clashes = overlapping_entries(
+            exclude_id = instance.pk if instance else None
+            section_clash = find_section_overlap(
                 school=school,
                 academic_year=academic_year,
                 day_of_week=day_of_week,
                 start_time=start_time,
                 end_time=end_time,
                 section=section,
-                teacher=teacher,
-                exclude_id=instance.pk if instance else None,
+                exclude_id=exclude_id,
             )
-            if clashes:
-                raise serializers.ValidationError({"non_field_errors": [describe_entry(clashes[0])]})
+            teacher_clash = None
+            if teacher is not None:
+                teacher_clash = find_teacher_overlap(
+                    school=school,
+                    academic_year=academic_year,
+                    day_of_week=day_of_week,
+                    start_time=start_time,
+                    end_time=end_time,
+                    teacher=teacher,
+                    exclude_id=exclude_id,
+                )
+
+            # One clear message — avoid duplicating the same clash under section + teacher.
+            if section_clash is not None and teacher_clash is not None:
+                if section_clash.pk == teacher_clash.pk:
+                    raise serializers.ValidationError(
+                        {"non_field_errors": [describe_same_slot_conflict(section_clash)]}
+                    )
+                raise serializers.ValidationError(
+                    {
+                        "non_field_errors": [
+                            f"{describe_section_conflict(section_clash)} Also: {describe_teacher_conflict(teacher_clash)}"
+                        ]
+                    }
+                )
+            if section_clash is not None:
+                raise serializers.ValidationError(
+                    {"non_field_errors": [describe_section_conflict(section_clash)]}
+                )
+            if teacher_clash is not None:
+                raise serializers.ValidationError(
+                    {"non_field_errors": [describe_teacher_conflict(teacher_clash)]}
+                )
 
         return attrs
 

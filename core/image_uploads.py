@@ -15,8 +15,12 @@ MAX_DIMENSION = 1600
 ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
 
 
-def optimize_profile_image(uploaded_file: UploadedFile) -> ContentFile:
-    if uploaded_file.size and uploaded_file.size > MAX_PROFILE_IMAGE_BYTES:
+def optimize_profile_image(uploaded_file: UploadedFile | None) -> ContentFile | None:
+    if uploaded_file is None:
+        return None
+
+    size = getattr(uploaded_file, "size", None)
+    if size and size > MAX_PROFILE_IMAGE_BYTES:
         raise ValidationError("Image must be 5 MB or smaller.")
 
     try:

@@ -140,7 +140,37 @@ class TimetableModuleTests(TestCase):
             format="json",
         )
         self.assertEqual(second.status_code, 400)
-        self.assertIn("Ali", str(second.data))
+        self.assertIn("non_field_errors", second.data)
+        message = str(second.data["non_field_errors"])
+        self.assertIn("Ali", message)
+        self.assertIn("busy", message.lower())
+
+    def test_teacher_can_be_reassigned_after_clearing_conflict(self):
+        self.client.force_authenticate(user=self.admin)
+        first = self.client.post("/api/v1/timetable-entries/", self._lecture_payload(), format="json")
+        self.assertEqual(first.status_code, 201)
+        entry_id = first.data["id"]
+
+        # Move Ali off the conflicting Monday 07:00–08:00 slot first.
+        cleared = self.client.patch(
+            f"/api/v1/timetable-entries/{entry_id}/",
+            {"teacher": self.fatima.id},
+            format="json",
+        )
+        self.assertEqual(cleared.status_code, 200, cleared.data)
+
+        second = self.client.post(
+            "/api/v1/timetable-entries/",
+            self._lecture_payload(
+                section=self.section_b.id,
+                subject=self.english.id,
+                start_time="07:30:00",
+                end_time="08:30:00",
+            ),
+            format="json",
+        )
+        self.assertEqual(second.status_code, 201, second.data)
+        self.assertEqual(second.data["teacher"], self.ali.id)
 
     def test_section_double_book_rejected(self):
         self.client.force_authenticate(user=self.admin)
@@ -156,6 +186,8 @@ class TimetableModuleTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 400)
+        self.assertIn("non_field_errors", response.data)
+        self.assertIn("already has a slot", str(response.data["non_field_errors"]).lower())
 
     def test_adjacent_slots_allowed(self):
         self.client.force_authenticate(user=self.admin)
@@ -335,6 +367,17 @@ class TimetableModuleTests(TestCase):
         self.assertEqual(response.data["current"]["roster"][0]["first_name"], "Hadi")
 
     def test_current_returns_break_when_in_break(self):
+        TimetableEntry.objects.create(
+            school=self.school,
+            academic_year=self.year,
+            section=self.section_a,
+            slot_type="lecture",
+            subject=self.math,
+            teacher=self.ali,
+            day_of_week=0,
+            start_time=time(10, 0),
+            end_time=time(11, 0),
+        )
         TimetableEntry.objects.create(
             school=self.school,
             academic_year=self.year,

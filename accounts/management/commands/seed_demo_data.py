@@ -3,10 +3,12 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
+from django.utils import timezone as dj_timezone
 
 from academics.models import ClassLevel, ClassSubject, PassingCriteria, Section, Subject, TeacherSubjectAssignment
 from accounts.models import ParentProfile, RoleChoices, TeacherProfile, UserRole
 from admissions.models import Admission, Inquiry, VisitorLog
+from attendance.models import AttendanceRecord, AttendanceSession
 from exams.models import Exam, Mark
 from fees.models import FeeStructure, Invoice, Payment
 from schools.models import AcademicYear, School, SchoolSubscription
@@ -174,7 +176,15 @@ class Command(BaseCommand):
                     academic_year=academic_year,
                 )
 
-        # Seed a weekly timetable: morning lectures + recess + lunch per section.
+        # Rebuild weekly timetable without teacher double-booking.
+        # Older seeds fell back to a busy teacher when no free section teacher existed,
+        # which produced impossible overlapping lectures (visible in the teacher portal).
+        # Clear attendance first: TimetableEntry delete SET_NULLs session.timetable_entry,
+        # and multiple orphans with the same slot identity violate att_sess_unique_orphan_slot.
+        AttendanceRecord.objects.filter(school=school, session__academic_year=academic_year).delete()
+        AttendanceSession.objects.filter(school=school, academic_year=academic_year).delete()
+        TimetableEntry.objects.filter(school=school, academic_year=academic_year).delete()
+
         lecture_blocks = [
             (0, time(7, 30), time(8, 20)),
             (1, time(8, 20), time(9, 10)),
@@ -182,83 +192,89 @@ class Command(BaseCommand):
             (3, time(10, 20), time(11, 10)),
             (4, time(11, 30), time(12, 20)),
         ]
-        for section_idx, section in enumerate(sections):
-            section_teachers = list(section.teachers.all()) or teacher_profiles
-            for day in range(5):  # Mon–Fri
-                TimetableEntry.objects.update_or_create(
+
+        def teacher_is_free(teacher_profile, day_of_week, start, end) -> bool:
+            return not TimetableEntry.objects.filter(
+                school=school,
+                academic_year=academic_year,
+                teacher=teacher_profile,
+                day_of_week=day_of_week,
+                start_time__lt=end,
+                end_time__gt=start,
+                is_active=True,
+            ).exists()
+
+        # Round-robin cursor so sections share limited teachers fairly across the week.
+        section_cursor = 0
+        for day in range(5):  # Mon–Fri
+            for section in sections:
+                TimetableEntry.objects.create(
                     school=school,
                     academic_year=academic_year,
                     section=section,
                     day_of_week=day,
                     start_time=time(9, 10),
                     end_time=time(9, 30),
-                    defaults={
-                        "slot_type": TimetableEntry.SLOT_BREAK,
-                        "label": "Recess",
-                        "subject": None,
-                        "teacher": None,
-                        "is_active": True,
-                    },
+                    slot_type=TimetableEntry.SLOT_BREAK,
+                    label="Recess",
+                    subject=None,
+                    teacher=None,
+                    is_active=True,
                 )
-                TimetableEntry.objects.update_or_create(
+                TimetableEntry.objects.create(
                     school=school,
                     academic_year=academic_year,
                     section=section,
                     day_of_week=day,
                     start_time=time(11, 10),
                     end_time=time(11, 30),
-                    defaults={
-                        "slot_type": TimetableEntry.SLOT_BREAK,
-                        "label": "Lunch",
-                        "subject": None,
-                        "teacher": None,
-                        "is_active": True,
-                    },
+                    slot_type=TimetableEntry.SLOT_BREAK,
+                    label="Lunch",
+                    subject=None,
+                    teacher=None,
+                    is_active=True,
                 )
-                for block_idx, (subject_offset, start, end) in enumerate(lecture_blocks):
-                    subject = subjects[(section_idx + subject_offset) % len(subjects)]
-                    teacher_profile = section_teachers[(section_idx + block_idx) % len(section_teachers)]
-                    # Avoid teacher double-booking across sections for the same day/time.
-                    if TimetableEntry.objects.filter(
-                        school=school,
-                        academic_year=academic_year,
-                        teacher=teacher_profile,
-                        day_of_week=day,
-                        start_time__lt=end,
-                        end_time__gt=start,
-                        is_active=True,
-                    ).exclude(section=section).exists():
-                        teacher_profile = next(
-                            (
-                                candidate
-                                for candidate in section_teachers
-                                if not TimetableEntry.objects.filter(
-                                    school=school,
-                                    academic_year=academic_year,
-                                    teacher=candidate,
-                                    day_of_week=day,
-                                    start_time__lt=end,
-                                    end_time__gt=start,
-                                    is_active=True,
-                                ).exclude(section=section).exists()
-                            ),
-                            section_teachers[0],
-                        )
-                    TimetableEntry.objects.update_or_create(
+
+            for block_idx, (subject_offset, start, end) in enumerate(lecture_blocks):
+                # At most one lecture per teacher in this time window.
+                assigned_teachers: set[int] = set()
+                checked = 0
+                while len(assigned_teachers) < len(teacher_profiles) and checked < len(sections):
+                    section = sections[section_cursor % len(sections)]
+                    section_idx = section_cursor % len(sections)
+                    section_cursor += 1
+                    checked += 1
+
+                    section_teachers = list(section.teachers.all())
+                    teacher_profile = next(
+                        (
+                            candidate
+                            for candidate in section_teachers
+                            if candidate.id not in assigned_teachers
+                            and teacher_is_free(candidate, day, start, end)
+                        ),
+                        None,
+                    )
+                    if teacher_profile is None:
+                        # No free teacher already on this section — skip rather than double-book
+                        # or silently attach a random teacher to the section roster.
+                        continue
+
+                    subject = subjects[(section_idx + subject_offset + block_idx) % len(subjects)]
+                    TimetableEntry.objects.create(
                         school=school,
                         academic_year=academic_year,
                         section=section,
                         day_of_week=day,
                         start_time=start,
                         end_time=end,
-                        defaults={
-                            "slot_type": TimetableEntry.SLOT_LECTURE,
-                            "subject": subject,
-                            "teacher": teacher_profile,
-                            "label": "",
-                            "is_active": True,
-                        },
+                        slot_type=TimetableEntry.SLOT_LECTURE,
+                        subject=subject,
+                        teacher=teacher_profile,
+                        label="",
+                        is_active=True,
                     )
+                    assigned_teachers.add(teacher_profile.id)
 
         first_names = [
             "Hamza", "Ayesha", "Bilal", "Sana", "Usman", "Mariam", "Farhan", "Hira", "Saad", "Noor",
@@ -323,6 +339,58 @@ class Command(BaseCommand):
                 student=student,
                 defaults={"relation": "Mother" if idx % 2 == 0 else "Father"},
             )
+
+        # Seed a couple of submitted attendance sessions for Ali's Monday lectures.
+        ali_teacher = next((profile for profile in teacher_profiles if profile.user.email == "teacher@demo.school"), None)
+        if ali_teacher is not None:
+            monday = date.today() - timedelta(days=date.today().weekday())
+            ali_lectures = list(
+                TimetableEntry.objects.filter(
+                    school=school,
+                    teacher=ali_teacher,
+                    slot_type=TimetableEntry.SLOT_LECTURE,
+                    day_of_week=0,
+                    is_active=True,
+                ).select_related("section", "subject", "academic_year")[:2]
+            )
+            statuses_cycle = [
+                AttendanceRecord.STATUS_PRESENT,
+                AttendanceRecord.STATUS_ABSENT,
+                AttendanceRecord.STATUS_LATE,
+                AttendanceRecord.STATUS_LEAVE,
+            ]
+            for lecture in ali_lectures:
+                session, _ = AttendanceSession.objects.update_or_create(
+                    timetable_entry=lecture,
+                    date=monday,
+                    defaults={
+                        "school": school,
+                        "academic_year": lecture.academic_year,
+                        "section": lecture.section,
+                        "teacher": lecture.teacher,
+                        "subject": lecture.subject,
+                        "day_of_week": lecture.day_of_week,
+                        "start_time": lecture.start_time,
+                        "end_time": lecture.end_time,
+                        "status": AttendanceSession.STATUS_SUBMITTED,
+                        "taken_by": ali_teacher.user,
+                        "taken_at": dj_timezone.now(),
+                        "notes": "Seeded demo attendance",
+                    },
+                )
+                section_students = list(
+                    Student.objects.filter(school=school, section=lecture.section, status="active").order_by("id")
+                )
+                for student_idx, student in enumerate(section_students):
+                    AttendanceRecord.objects.update_or_create(
+                        session=session,
+                        student=student,
+                        defaults={
+                            "school": school,
+                            "status": statuses_cycle[student_idx % len(statuses_cycle)],
+                            "remarks": "Seeded" if student_idx % 4 == 1 else "",
+                        },
+                    )
 
         fee_structures = []
         for level in class_levels:

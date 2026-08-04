@@ -18,7 +18,13 @@ from students.models import Student
 
 from .models import TimetableEntry
 from .serializers import BulkBreakSerializer, TimetableEntrySerializer
-from .services import describe_entry, overlapping_entries, school_local_now, section_label
+from .services import (
+    describe_entry,
+    overlapping_entries,
+    school_local_now,
+    section_label,
+    teacher_schedule_q,
+)
 
 
 class TimetableEntryViewSet(TenantScopedModelViewSet):
@@ -64,10 +70,7 @@ class TimetableEntryViewSet(TenantScopedModelViewSet):
             teacher = getattr(user, "teacher_profile", None)
             if teacher is None:
                 return qs.none()
-            my_sections = Section.objects.filter(school=school, teachers=teacher).values_list("id", flat=True)
-            return qs.filter(
-                Q(teacher=teacher) | Q(slot_type=TimetableEntry.SLOT_BREAK, section_id__in=my_sections)
-            )
+            return qs.filter(teacher_schedule_q(teacher, school))
 
         if role == "parent":
             parent = getattr(user, "parent_profile", None)
@@ -118,12 +121,7 @@ class TimetableEntryViewSet(TenantScopedModelViewSet):
 
         qs = self.get_queryset().filter(is_active=True)
         if teacher is not None and not is_school_admin_or_manager(request.user):
-            my_sections = Section.objects.filter(
-                school=request.user.active_school, teachers=teacher
-            ).values_list("id", flat=True)
-            qs = qs.filter(
-                Q(teacher=teacher) | Q(slot_type=TimetableEntry.SLOT_BREAK, section_id__in=my_sections)
-            )
+            qs = qs.filter(teacher_schedule_q(teacher, request.user.active_school))
         elif teacher is not None:
             qs = qs.filter(teacher=teacher)
 
@@ -144,17 +142,14 @@ class TimetableEntryViewSet(TenantScopedModelViewSet):
             return Response({"detail": "Active school required."}, status=status.HTTP_400_BAD_REQUEST)
 
         local_now, day_of_week, local_time = school_local_now(school)
-        my_sections = list(
-            Section.objects.filter(school=school, teachers=teacher).values_list("id", flat=True)
-        )
 
         base = TimetableEntry.objects.filter(
             school=school,
             day_of_week=day_of_week,
             is_active=True,
-        ).filter(
-            Q(teacher=teacher) | Q(slot_type=TimetableEntry.SLOT_BREAK, section_id__in=my_sections)
-        ).select_related("section__class_level", "subject", "teacher__user")
+        ).filter(teacher_schedule_q(teacher, school)).select_related(
+            "section__class_level", "subject", "teacher__user"
+        )
 
         current_entry = (
             base.filter(start_time__lte=local_time, end_time__gt=local_time)
@@ -186,16 +181,44 @@ class TimetableEntryViewSet(TenantScopedModelViewSet):
             "server_time": local_now.isoformat(),
             "day_of_week": day_of_week,
             "local_time": local_time.strftime("%H:%M:%S"),
-            "current": self._serialize_current_slot(current_entry, request, include_roster=True),
-            "next": self._serialize_current_slot(next_entry, request, include_roster=False),
+            "current": self._serialize_current_slot(
+                current_entry, request, include_roster=True, attendance_date=local_now.date()
+            ),
+            "next": self._serialize_current_slot(
+                next_entry, request, include_roster=False, attendance_date=local_now.date()
+            ),
         }
         return Response(payload)
 
-    def _serialize_current_slot(self, entry: TimetableEntry | None, request, *, include_roster: bool):
+    def _serialize_current_slot(
+        self,
+        entry: TimetableEntry | None,
+        request,
+        *,
+        include_roster: bool,
+        attendance_date=None,
+    ):
         if entry is None:
             return None
         data = TimetableEntrySerializer(entry, context={"request": request}).data
         data["section_label"] = section_label(entry.section)
+        data["attendance_session_id"] = None
+        data["attendance_taken"] = False
+        if entry.slot_type == TimetableEntry.SLOT_LECTURE and attendance_date is not None:
+            from attendance.models import AttendanceSession
+
+            session = (
+                AttendanceSession.objects.filter(
+                    timetable_entry=entry,
+                    date=attendance_date,
+                    status=AttendanceSession.STATUS_SUBMITTED,
+                )
+                .only("id")
+                .first()
+            )
+            if session is not None:
+                data["attendance_session_id"] = session.id
+                data["attendance_taken"] = True
         if include_roster and entry.slot_type == TimetableEntry.SLOT_LECTURE:
             students = (
                 Student.objects.filter(section=entry.section, status="active")

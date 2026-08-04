@@ -48,6 +48,18 @@ class IsTimetableViewer(HasRole):
     required_roles = {"school_admin", "manager", "teacher", "parent"}
 
 
+class IsAttendanceStaff(HasRole):
+    """School admins, managers, and teachers can manage attendance sessions."""
+
+    required_roles = {"school_admin", "manager", "teacher"}
+
+
+class IsAttendanceViewer(HasRole):
+    """Staff and parents can view attendance records scoped to their role."""
+
+    required_roles = {"school_admin", "manager", "teacher", "parent"}
+
+
 def get_active_role(user) -> str | None:
     if not user.is_authenticated:
         return None
