@@ -83,6 +83,17 @@ DATABASES = {
     }
 }
 
+# Railway Postgres / standard PaaS connection string takes precedence.
+_database_url = os.getenv("DATABASE_URL", "").strip()
+if _database_url:
+    import dj_database_url
+
+    DATABASES["default"] = dj_database_url.parse(
+        _database_url,
+        conn_max_age=600,
+        ssl_require=os.getenv("DB_SSL_REQUIRE", "true").lower() in ("true", "1", "yes"),
+    )
+
 AUTH_USER_MODEL = "accounts.User"
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -97,7 +108,8 @@ TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = "static/"
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
@@ -169,24 +181,39 @@ SIMPLE_JWT = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "School Management API",
+    "TITLE": "Edunity API",
     "VERSION": "1.0.0",
 }
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
 ]
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",
     r"^http://127\.0\.0\.1:\d+$",
     r"^http://192\.168\.\d+\.\d+:\d+$",
+    r"^https://.*\.up\.railway\.app$",
+    r"^https://.*\.railway\.app$",
 ]
+_extra_cors_regexes = os.getenv("CORS_ALLOWED_ORIGIN_REGEXES", "")
+if _extra_cors_regexes.strip():
+    CORS_ALLOWED_ORIGIN_REGEXES.extend(
+        [pattern.strip() for pattern in _extra_cors_regexes.split(",") if pattern.strip()]
+    )
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    origin.strip()
+    for origin in os.getenv(
+        "CSRF_TRUSTED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
+    if origin.strip()
 ]
 
 CELERY_BROKER_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
