@@ -11,6 +11,7 @@ from exams.models import Exam, Mark
 from fees.models import FeeStructure, Invoice, Payment
 from schools.models import AcademicYear, School, SchoolSubscription
 from students.models import ParentStudentLink, Student
+from timetable.models import TimetableEntry
 
 User = get_user_model()
 DEFAULT_PASSWORD = "DemoPass123!"
@@ -22,8 +23,11 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         school, _ = School.objects.get_or_create(
             slug="demo-school",
-            defaults={"name": "Demo School", "address": "Main Road, Lahore"},
+            defaults={"name": "Demo School", "address": "Main Road, Lahore", "timezone": "Asia/Karachi"},
         )
+        if not school.timezone:
+            school.timezone = "Asia/Karachi"
+            school.save(update_fields=["timezone"])
         SchoolSubscription.objects.get_or_create(school=school)
 
         academic_year, _ = AcademicYear.objects.get_or_create(
@@ -169,6 +173,92 @@ class Command(BaseCommand):
                     section=section,
                     academic_year=academic_year,
                 )
+
+        # Seed a weekly timetable: morning lectures + recess + lunch per section.
+        lecture_blocks = [
+            (0, time(7, 30), time(8, 20)),
+            (1, time(8, 20), time(9, 10)),
+            (2, time(9, 30), time(10, 20)),
+            (3, time(10, 20), time(11, 10)),
+            (4, time(11, 30), time(12, 20)),
+        ]
+        for section_idx, section in enumerate(sections):
+            section_teachers = list(section.teachers.all()) or teacher_profiles
+            for day in range(5):  # Mon–Fri
+                TimetableEntry.objects.update_or_create(
+                    school=school,
+                    academic_year=academic_year,
+                    section=section,
+                    day_of_week=day,
+                    start_time=time(9, 10),
+                    end_time=time(9, 30),
+                    defaults={
+                        "slot_type": TimetableEntry.SLOT_BREAK,
+                        "label": "Recess",
+                        "subject": None,
+                        "teacher": None,
+                        "is_active": True,
+                    },
+                )
+                TimetableEntry.objects.update_or_create(
+                    school=school,
+                    academic_year=academic_year,
+                    section=section,
+                    day_of_week=day,
+                    start_time=time(11, 10),
+                    end_time=time(11, 30),
+                    defaults={
+                        "slot_type": TimetableEntry.SLOT_BREAK,
+                        "label": "Lunch",
+                        "subject": None,
+                        "teacher": None,
+                        "is_active": True,
+                    },
+                )
+                for block_idx, (subject_offset, start, end) in enumerate(lecture_blocks):
+                    subject = subjects[(section_idx + subject_offset) % len(subjects)]
+                    teacher_profile = section_teachers[(section_idx + block_idx) % len(section_teachers)]
+                    # Avoid teacher double-booking across sections for the same day/time.
+                    if TimetableEntry.objects.filter(
+                        school=school,
+                        academic_year=academic_year,
+                        teacher=teacher_profile,
+                        day_of_week=day,
+                        start_time__lt=end,
+                        end_time__gt=start,
+                        is_active=True,
+                    ).exclude(section=section).exists():
+                        teacher_profile = next(
+                            (
+                                candidate
+                                for candidate in section_teachers
+                                if not TimetableEntry.objects.filter(
+                                    school=school,
+                                    academic_year=academic_year,
+                                    teacher=candidate,
+                                    day_of_week=day,
+                                    start_time__lt=end,
+                                    end_time__gt=start,
+                                    is_active=True,
+                                ).exclude(section=section).exists()
+                            ),
+                            section_teachers[0],
+                        )
+                    TimetableEntry.objects.update_or_create(
+                        school=school,
+                        academic_year=academic_year,
+                        section=section,
+                        day_of_week=day,
+                        start_time=start,
+                        end_time=end,
+                        defaults={
+                            "slot_type": TimetableEntry.SLOT_LECTURE,
+                            "subject": subject,
+                            "teacher": teacher_profile,
+                            "label": "",
+                            "is_active": True,
+                        },
+                    )
 
         first_names = [
             "Hamza", "Ayesha", "Bilal", "Sana", "Usman", "Mariam", "Farhan", "Hira", "Saad", "Noor",

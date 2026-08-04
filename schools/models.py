@@ -6,6 +6,11 @@ class School(models.Model):
     slug = models.SlugField(unique=True)
     logo = models.URLField(blank=True)
     address = models.TextField(blank=True)
+    timezone = models.CharField(
+        max_length=64,
+        default="Asia/Karachi",
+        help_text="IANA timezone used for timetable and attendance local-time resolution.",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

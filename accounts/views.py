@@ -7,9 +7,9 @@ from django.db import transaction
 from django.db.models import Q
 
 from academics.models import Section
-from core.permissions import IsSchoolAdmin, IsTeacher
+from core.permissions import IsParent, IsSchoolAdmin, IsTeacher
 from core.viewsets import TenantScopedModelViewSet
-from students.models import Student
+from students.models import ParentStudentLink, Student
 
 from .models import ParentProfile, RoleChoices, TeacherProfile, UserRole
 from .serializers import (
@@ -163,3 +163,42 @@ class ParentProfileViewSet(TenantScopedModelViewSet):
     search_fields = ["user__first_name", "user__last_name", "user__email"]
     ordering_fields = ["user__first_name"]
     ordering = ["user__first_name"]
+
+
+class ParentChildrenView(APIView):
+    """Return students linked to the authenticated parent for portal selectors."""
+
+    permission_classes = [IsAuthenticated, IsParent]
+
+    def get(self, request):
+        parent = getattr(request.user, "parent_profile", None)
+        school = request.user.active_school
+        if parent is None or school is None:
+            return Response([])
+
+        links = (
+            ParentStudentLink.objects.filter(parent=parent, school=school)
+            .select_related("student__section__class_level")
+            .order_by("student__first_name", "student__last_name")
+        )
+        results = []
+        for link in links:
+            student = link.student
+            section = student.section
+            results.append(
+                {
+                    "id": student.id,
+                    "first_name": student.first_name,
+                    "last_name": student.last_name,
+                    "full_name": f"{student.first_name} {student.last_name}".strip(),
+                    "roll_number": student.roll_number,
+                    "section": section.id if section else None,
+                    "section_label": (
+                        f"{section.class_level.name}-{section.name}"
+                        if section is not None
+                        else ""
+                    ),
+                    "relation": link.relation,
+                }
+            )
+        return Response(results)
