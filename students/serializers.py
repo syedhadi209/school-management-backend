@@ -7,6 +7,7 @@ from accounts.parent_services import provision_parent_for_student
 from core.cnic import validate_cnic
 from core.image_uploads import optimize_profile_image, schedule_storage_delete
 from fees.services import upsert_student_monthly_fee
+from funds.services import ensure_student_fund_invoices
 
 from .models import ParentStudentLink, Student
 
@@ -189,6 +190,8 @@ class StudentSerializer(serializers.ModelSerializer):
                 notes=fee_notes if fee_notes is not None else "",
                 refresh_base=True,
             )
+        if student.section_id is not None:
+            ensure_student_fund_invoices(student)
         self._sync_parent(student)
         return student
 
@@ -217,6 +220,8 @@ class StudentSerializer(serializers.ModelSerializer):
                 notes=fee_notes if notes_provided else None,
                 refresh_base=section_changed,
             )
+        if section_changed and student.section_id is not None:
+            ensure_student_fund_invoices(student)
         self._sync_parent(student)
         return student
 

@@ -60,14 +60,46 @@ class StudentMonthlyFee(models.Model):
 
 
 class Invoice(models.Model):
+    TYPE_MONTHLY_FEE = "monthly_fee"
+    TYPE_FUND = "fund"
+    TYPE_CHOICES = (
+        (TYPE_MONTHLY_FEE, "Monthly fee"),
+        (TYPE_FUND, "Fund"),
+    )
+
     STATUS_CHOICES = (("unpaid", "Unpaid"), ("partial", "Partial"), ("paid", "Paid"))
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="invoices")
     student = models.ForeignKey("students.Student", on_delete=models.CASCADE, related_name="invoices")
     fee_structure = models.ForeignKey(FeeStructure, on_delete=models.SET_NULL, null=True, blank=True)
+    invoice_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default=TYPE_MONTHLY_FEE)
+    fund = models.ForeignKey(
+        "funds.Fund",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices",
+    )
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="unpaid")
     due_date = models.DateField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["fund", "student"],
+                condition=models.Q(invoice_type="fund", fund__isnull=False),
+                name="invoice_unique_fund_per_student",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["invoice_type", "status"]),
+            models.Index(fields=["fund", "status"]),
+        ]
+
+    @property
+    def balance(self):
+        return max(self.total_amount - self.paid_amount, 0)
 
 
 class Payment(models.Model):

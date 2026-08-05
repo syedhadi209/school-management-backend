@@ -26,6 +26,7 @@ urlpatterns = [
     path("api/v1/", include("students.urls")),
     path("api/v1/", include("exams.urls")),
     path("api/v1/", include("fees.urls")),
+    path("api/v1/", include("funds.urls")),
     path("api/v1/", include("admissions.urls")),
     path("api/v1/", include("timetable.urls")),
     path("api/v1/", include("attendance.urls")),

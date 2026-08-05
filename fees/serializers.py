@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from django.db import transaction
 from rest_framework import serializers
 
 from .models import FeeStructure, Invoice, Payment, StudentMonthlyFee
@@ -64,6 +65,8 @@ class StudentMonthlyFeeSerializer(serializers.ModelSerializer):
 class InvoiceSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     fee_structure_name = serializers.CharField(source="fee_structure.name", read_only=True, default="")
+    fund_name = serializers.CharField(source="fund.name", read_only=True, default="")
+    tenure = serializers.CharField(source="fund.tenure", read_only=True, default="")
     balance = serializers.SerializerMethodField()
 
     def get_student_name(self, obj: Invoice) -> str:
@@ -77,6 +80,43 @@ class InvoiceSerializer(serializers.ModelSerializer):
         fields = "__all__"
         read_only_fields = ("school",)
 
+    def validate(self, attrs):
+        invoice_type = attrs.get("invoice_type", getattr(self.instance, "invoice_type", Invoice.TYPE_MONTHLY_FEE))
+        fund = attrs.get("fund", getattr(self.instance, "fund", None))
+        fee_structure = attrs.get("fee_structure", getattr(self.instance, "fee_structure", None))
+        student = attrs.get("student", getattr(self.instance, "student", None))
+
+        if invoice_type == Invoice.TYPE_FUND:
+            if fund is None:
+                raise serializers.ValidationError({"fund": "Fund is required for fund invoices."})
+            attrs["fee_structure"] = None
+            if student is not None:
+                existing = Invoice.objects.filter(
+                    fund=fund, student=student, invoice_type=Invoice.TYPE_FUND
+                )
+                if self.instance is not None:
+                    existing = existing.exclude(pk=self.instance.pk)
+                if existing.exists():
+                    raise serializers.ValidationError(
+                        {
+                            "student": (
+                                "This student already has an invoice for this fund. "
+                                "Use Record Payment on the existing invoice to collect."
+                            )
+                        }
+                    )
+            if "total_amount" not in attrs and self.instance is None:
+                attrs["total_amount"] = fund.amount
+            if "due_date" not in attrs and self.instance is None and fund.due_on:
+                attrs["due_date"] = fund.due_on
+        else:
+            attrs["fund"] = None
+            if fee_structure is None and self.instance is None:
+                raise serializers.ValidationError(
+                    {"fee_structure": "Class tuition is required for monthly fee invoices."}
+                )
+        return attrs
+
 
 class PaymentSerializer(serializers.ModelSerializer):
     invoice_student_name = serializers.SerializerMethodField()
@@ -88,3 +128,29 @@ class PaymentSerializer(serializers.ModelSerializer):
         model = Payment
         fields = "__all__"
         read_only_fields = ("school",)
+
+    def validate_amount(self, value):
+        if value is None or value <= 0:
+            raise serializers.ValidationError("Payment amount must be greater than zero.")
+        return value
+
+    def validate(self, attrs):
+        invoice = attrs.get("invoice", getattr(self.instance, "invoice", None))
+        amount = attrs.get("amount")
+        if invoice is not None and amount is not None and self.instance is None:
+            remaining = invoice.total_amount - invoice.paid_amount
+            if amount > remaining:
+                raise serializers.ValidationError(
+                    {"amount": f"Payment exceeds remaining balance of {remaining}."}
+                )
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        from funds.services import apply_payment_to_invoice
+
+        invoice = validated_data["invoice"]
+        amount = Decimal(str(validated_data["amount"]))
+        payment = Payment.objects.create(**validated_data)
+        apply_payment_to_invoice(invoice=invoice, amount=amount)
+        return payment
