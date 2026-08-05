@@ -2,7 +2,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
 from django.db.models import Count
 
-from core.permissions import IsManager
+from core.permissions import IsManager, IsTeacher, get_active_role, is_school_admin_or_manager
 from core.viewsets import TenantScopedModelViewSet
 from schools.services import get_or_create_default_academic_year
 
@@ -19,7 +19,12 @@ from .services import get_or_create_default_section
 
 
 class ClassLevelViewSet(TenantScopedModelViewSet):
-    queryset = ClassLevel.objects.select_related("academic_year").annotate(section_count=Count("sections")).all()
+    queryset = (
+        ClassLevel.objects.select_related("academic_year")
+        .prefetch_related("fee_structures")
+        .annotate(section_count=Count("sections"))
+        .all()
+    )
     serializer_class = ClassLevelSerializer
     permission_classes = [IsAuthenticated, IsManager]
     search_fields = ["name", "academic_year__name"]
@@ -78,12 +83,28 @@ class ClassSubjectViewSet(TenantScopedModelViewSet):
 
 class TeacherSubjectAssignmentViewSet(TenantScopedModelViewSet):
     queryset = TeacherSubjectAssignment.objects.select_related(
-        "teacher__user", "subject", "section", "academic_year"
+        "teacher__user", "subject", "section__class_level", "academic_year"
     ).all()
     serializer_class = TeacherSubjectAssignmentSerializer
-    permission_classes = [IsAuthenticated, IsManager]
     search_fields = ["teacher__user__first_name", "teacher__user__last_name", "subject__name", "section__name"]
     filterset_fields = ["teacher", "subject", "section", "academic_year"]
+
+    def get_permissions(self):
+        if self.request.method in ("GET", "HEAD", "OPTIONS"):
+            return [IsAuthenticated(), IsTeacher()]
+        return [IsAuthenticated(), IsManager()]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        user = self.request.user
+        if user.is_superuser or is_school_admin_or_manager(user):
+            return qs
+        if get_active_role(user) == "teacher":
+            teacher = getattr(user, "teacher_profile", None)
+            if teacher is None:
+                return qs.none()
+            return qs.filter(teacher=teacher)
+        return qs.none()
 
 
 class PassingCriteriaViewSet(TenantScopedModelViewSet):

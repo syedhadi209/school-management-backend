@@ -1,9 +1,12 @@
+from decimal import Decimal, InvalidOperation
+
 from rest_framework import serializers
 
 from academics.models import Section
 from accounts.parent_services import provision_parent_for_student
 from core.cnic import validate_cnic
 from core.image_uploads import optimize_profile_image, schedule_storage_delete
+from fees.services import upsert_student_monthly_fee
 
 from .models import ParentStudentLink, Student
 
@@ -15,6 +18,15 @@ class StudentSerializer(serializers.ModelSerializer):
     is_board_class = serializers.SerializerMethodField()
     parent_invite_pending = serializers.SerializerMethodField()
     profile_image_clear = serializers.BooleanField(write_only=True, required=False, default=False)
+    discount_amount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True, write_only=True
+    )
+    fee_notes = serializers.CharField(required=False, allow_blank=True, write_only=True)
+    monthly_fee_base = serializers.SerializerMethodField()
+    monthly_fee_discount = serializers.SerializerMethodField()
+    monthly_fee_effective = serializers.SerializerMethodField()
+    fee_structure = serializers.SerializerMethodField()
+    fee_notes_display = serializers.SerializerMethodField()
 
     def get_full_name(self, obj: Student) -> str:
         return f"{obj.first_name} {obj.last_name}".strip()
@@ -30,6 +42,34 @@ class StudentSerializer(serializers.ModelSerializer):
         if link is None:
             return False
         return not link.parent.user.has_usable_password()
+
+    def _monthly_fee(self, obj: Student):
+        try:
+            return obj.monthly_fee
+        except Student.monthly_fee.RelatedObjectDoesNotExist:
+            return None
+        except AttributeError:
+            return None
+
+    def get_monthly_fee_base(self, obj: Student):
+        fee = self._monthly_fee(obj)
+        return fee.base_amount if fee else None
+
+    def get_monthly_fee_discount(self, obj: Student):
+        fee = self._monthly_fee(obj)
+        return fee.discount_amount if fee else None
+
+    def get_monthly_fee_effective(self, obj: Student):
+        fee = self._monthly_fee(obj)
+        return fee.effective_amount if fee else None
+
+    def get_fee_structure(self, obj: Student):
+        fee = self._monthly_fee(obj)
+        return fee.fee_structure_id if fee else None
+
+    def get_fee_notes_display(self, obj: Student) -> str:
+        fee = self._monthly_fee(obj)
+        return fee.notes if fee else ""
 
     class Meta:
         model = Student
@@ -75,6 +115,17 @@ class StudentSerializer(serializers.ModelSerializer):
         if school is not None and section.school_id != school.id:
             raise serializers.ValidationError("Section must belong to your active school.")
         return section
+
+    def validate_discount_amount(self, value):
+        if value is None:
+            return None
+        try:
+            amount = Decimal(value)
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise serializers.ValidationError("Enter a valid discount amount.") from exc
+        if amount < 0:
+            raise serializers.ValidationError("Discount cannot be negative.")
+        return amount
 
     def validate(self, attrs):
         instance = self.instance
@@ -127,14 +178,29 @@ class StudentSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop("profile_image_clear", None)
+        discount_amount = validated_data.pop("discount_amount", None)
+        fee_notes = validated_data.pop("fee_notes", None)
         student = super().create(validated_data)
+        # Always sync when section is present so base fee is snapshotted even with 0 discount.
+        if student.section_id is not None or discount_amount is not None or fee_notes is not None:
+            upsert_student_monthly_fee(
+                student=student,
+                discount_amount=discount_amount if discount_amount is not None else Decimal("0"),
+                notes=fee_notes if fee_notes is not None else "",
+                refresh_base=True,
+            )
         self._sync_parent(student)
         return student
 
     def update(self, instance, validated_data):
         clear_profile_image = validated_data.pop("profile_image_clear", False)
+        discount_provided = "discount_amount" in validated_data
+        notes_provided = "fee_notes" in validated_data
+        discount_amount = validated_data.pop("discount_amount", None)
+        fee_notes = validated_data.pop("fee_notes", None)
         old_image_name = instance.profile_image.name
         old_image_storage = instance.profile_image.storage if old_image_name else None
+        section_changed = "section" in validated_data and validated_data.get("section") != instance.section
 
         if clear_profile_image:
             validated_data["profile_image"] = None
@@ -143,6 +209,14 @@ class StudentSerializer(serializers.ModelSerializer):
         new_image_name = student.profile_image.name
         if old_image_name and old_image_name != new_image_name and old_image_storage is not None:
             schedule_storage_delete(old_image_storage, old_image_name)
+
+        if section_changed or discount_provided or notes_provided:
+            upsert_student_monthly_fee(
+                student=student,
+                discount_amount=discount_amount if discount_provided else None,
+                notes=fee_notes if notes_provided else None,
+                refresh_base=section_changed,
+            )
         self._sync_parent(student)
         return student
 
