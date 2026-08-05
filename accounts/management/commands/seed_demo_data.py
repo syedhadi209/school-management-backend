@@ -11,6 +11,8 @@ from admissions.models import Admission, Inquiry, VisitorLog
 from attendance.models import AttendanceRecord, AttendanceSession
 from exams.models import Exam, Mark, MarkSheet
 from fees.models import FeeStructure, Invoice, Payment, StudentMonthlyFee
+from funds.models import Fund
+from funds.services import activate_fund
 from schools.models import AcademicYear, School, SchoolSubscription
 from students.models import ParentStudentLink, Student
 from timetable.models import TimetableEntry
@@ -434,6 +436,7 @@ class Command(BaseCommand):
                 school=school,
                 student=student,
                 fee_structure=fee_structure,
+                invoice_type=Invoice.TYPE_MONTHLY_FEE,
                 defaults={
                     "total_amount": total_amount,
                     "paid_amount": paid_amount,
@@ -441,6 +444,8 @@ class Command(BaseCommand):
                     "due_date": date.today() + timedelta(days=(idx % 25) + 5),
                 },
             )
+            invoice.invoice_type = Invoice.TYPE_MONTHLY_FEE
+            invoice.fund = None
             invoice.total_amount = total_amount
             invoice.paid_amount = paid_amount
             invoice.status = status
@@ -454,6 +459,53 @@ class Command(BaseCommand):
                     amount=paid_amount,
                     defaults={"method": "cash" if idx % 2 == 0 else "bank_transfer"},
                 )
+
+        # Annual school fund for Class 1–4 → typed fund invoices + one partial payment.
+        fund_levels = [level for level in class_levels if level.order <= 4] or class_levels[:4]
+        annual_fund, _ = Fund.objects.get_or_create(
+            school=school,
+            academic_year=academic_year,
+            name="Annual Fund",
+            defaults={
+                "amount": Decimal("2500"),
+                "tenure": Fund.TENURE_ANNUALLY,
+                "starts_on": date.today().replace(month=4, day=1),
+                "due_on": date.today().replace(month=12, day=31),
+                "status": Fund.STATUS_DRAFT,
+                "notes": "School development and facilities",
+                "created_by": school_admin,
+            },
+        )
+        annual_fund.amount = Decimal("2500")
+        annual_fund.tenure = Fund.TENURE_ANNUALLY
+        annual_fund.due_on = date.today().replace(month=12, day=31)
+        annual_fund.notes = "School development and facilities"
+        annual_fund.save()
+        annual_fund.class_levels.set(fund_levels)
+        if annual_fund.status != Fund.STATUS_ACTIVE:
+            activate_fund(annual_fund, user=school_admin)
+        else:
+            from funds.services import sync_fund_invoices
+
+            sync_fund_invoices(annual_fund)
+
+        sample_fund_invoice = (
+            Invoice.objects.filter(fund=annual_fund, invoice_type=Invoice.TYPE_FUND, status="unpaid")
+            .order_by("id")
+            .first()
+        )
+        if sample_fund_invoice is not None:
+            partial = (sample_fund_invoice.total_amount * Decimal("0.40")).quantize(Decimal("0.01"))
+            if not Payment.objects.filter(invoice=sample_fund_invoice).exists():
+                Payment.objects.create(
+                    school=school,
+                    invoice=sample_fund_invoice,
+                    amount=partial,
+                    method="cash",
+                )
+                sample_fund_invoice.paid_amount = partial
+                sample_fund_invoice.status = "partial"
+                sample_fund_invoice.save(update_fields=["paid_amount", "status"])
 
         inquiry_statuses = ["new", "contacted", "visited", "applied", "admitted", "rejected"]
         inquiries = []
