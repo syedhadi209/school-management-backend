@@ -9,7 +9,7 @@ from academics.models import ClassLevel, ClassSubject, PassingCriteria, Section,
 from accounts.models import ParentProfile, RoleChoices, TeacherProfile, UserRole
 from admissions.models import Admission, Inquiry, VisitorLog
 from attendance.models import AttendanceRecord, AttendanceSession
-from exams.models import Exam, Mark
+from exams.models import Exam, Mark, MarkSheet
 from fees.models import FeeStructure, Invoice, Payment
 from schools.models import AcademicYear, School, SchoolSubscription
 from students.models import ParentStudentLink, Student
@@ -508,24 +508,141 @@ class Command(BaseCommand):
                 admission.student = linked_student
             admission.save()
 
-        exam, _ = Exam.objects.get_or_create(
+        # Exams: one published class test + one open midterm with sample sheets.
+        ali_assignment = None
+        if ali_teacher is not None:
+            ali_assignment = (
+                TeacherSubjectAssignment.objects.filter(
+                    teacher=ali_teacher, school=school, academic_year=academic_year
+                )
+                .select_related("section", "subject")
+                .first()
+            )
+
+        if ali_assignment is not None:
+            class_test, _ = Exam.objects.get_or_create(
+                academic_year=academic_year,
+                section=ali_assignment.section,
+                subject=ali_assignment.subject,
+                name="Chapter Quiz 1",
+                defaults={
+                    "school": school,
+                    "exam_type": Exam.TYPE_CLASS_TEST,
+                    "status": Exam.STATUS_PUBLISHED,
+                    "max_marks": Decimal("50"),
+                    "starts_on": date.today() - timedelta(days=7),
+                    "ends_on": date.today() - timedelta(days=7),
+                    "created_by": ali_teacher.user,
+                    "published_at": dj_timezone.now(),
+                    "published_by": ali_teacher.user,
+                },
+            )
+            if class_test.exam_type != Exam.TYPE_CLASS_TEST:
+                class_test.exam_type = Exam.TYPE_CLASS_TEST
+                class_test.status = Exam.STATUS_PUBLISHED
+                class_test.max_marks = Decimal("50")
+                class_test.published_at = class_test.published_at or dj_timezone.now()
+                class_test.published_by = class_test.published_by or ali_teacher.user
+                class_test.save()
+
+            sheet, _ = MarkSheet.objects.get_or_create(
+                exam=class_test,
+                section=ali_assignment.section,
+                subject=ali_assignment.subject,
+                defaults={
+                    "school": school,
+                    "academic_year": academic_year,
+                    "teacher": ali_teacher,
+                    "status": MarkSheet.STATUS_SUBMITTED,
+                    "max_marks": Decimal("50"),
+                    "submitted_at": dj_timezone.now(),
+                    "submitted_by": ali_teacher.user,
+                    "notes": "Seeded class test",
+                },
+            )
+            if sheet.status != MarkSheet.STATUS_SUBMITTED:
+                sheet.status = MarkSheet.STATUS_SUBMITTED
+                sheet.submitted_at = sheet.submitted_at or dj_timezone.now()
+                sheet.submitted_by = sheet.submitted_by or ali_teacher.user
+                sheet.save()
+
+            section_students = list(
+                Student.objects.filter(
+                    school=school, section=ali_assignment.section, status="active"
+                ).order_by("id")
+            )
+            for idx, student in enumerate(section_students):
+                Mark.objects.update_or_create(
+                    exam=class_test,
+                    student=student,
+                    subject=ali_assignment.subject,
+                    defaults={
+                        "school": school,
+                        "sheet": sheet,
+                        "teacher": ali_teacher,
+                        "marks_obtained": Decimal(30 + (idx % 20)),
+                        "max_marks": Decimal("50"),
+                        "remarks": "",
+                    },
+                )
+
+        midterm, _ = Exam.objects.get_or_create(
             school=school,
             academic_year=academic_year,
             name="Midterm",
-            defaults={"starts_on": date.today(), "ends_on": date.today()},
+            defaults={
+                "exam_type": Exam.TYPE_MIDTERM,
+                "status": Exam.STATUS_OPEN,
+                "max_marks": Decimal("100"),
+                "starts_on": date.today(),
+                "ends_on": date.today() + timedelta(days=7),
+                "created_by": school_admin,
+            },
         )
-        for idx, student in enumerate(students[:20]):
-            Mark.objects.get_or_create(
-                school=school,
-                exam=exam,
-                student=student,
-                subject=subjects[idx % len(subjects)],
+        if midterm.exam_type != Exam.TYPE_MIDTERM:
+            midterm.exam_type = Exam.TYPE_MIDTERM
+            midterm.status = Exam.STATUS_OPEN
+            midterm.section = None
+            midterm.subject = None
+            midterm.max_marks = Decimal("100")
+            midterm.save()
+
+        # Seed one midterm sheet for Ali's assignment (submitted, unpublished exam).
+        if ali_assignment is not None:
+            mid_sheet, _ = MarkSheet.objects.get_or_create(
+                exam=midterm,
+                section=ali_assignment.section,
+                subject=ali_assignment.subject,
                 defaults={
-                    "teacher": teacher_profiles[idx % len(teacher_profiles)],
-                    "marks_obtained": 60 + (idx % 35),
-                    "max_marks": 100,
+                    "school": school,
+                    "academic_year": academic_year,
+                    "teacher": ali_teacher,
+                    "status": MarkSheet.STATUS_SUBMITTED,
+                    "max_marks": Decimal("100"),
+                    "submitted_at": dj_timezone.now(),
+                    "submitted_by": ali_teacher.user,
+                    "notes": "Seeded midterm sheet",
                 },
             )
+            mid_students = list(
+                Student.objects.filter(
+                    school=school, section=ali_assignment.section, status="active"
+                ).order_by("id")
+            )
+            for idx, student in enumerate(mid_students):
+                Mark.objects.update_or_create(
+                    exam=midterm,
+                    student=student,
+                    subject=ali_assignment.subject,
+                    defaults={
+                        "school": school,
+                        "sheet": mid_sheet,
+                        "teacher": ali_teacher,
+                        "marks_obtained": Decimal(60 + (idx % 35)),
+                        "max_marks": Decimal("100"),
+                        "remarks": "",
+                    },
+                )
 
         self.stdout.write(self.style.SUCCESS("Demo data seeded successfully."))
         self.stdout.write("Login credentials:")

@@ -60,6 +60,18 @@ class IsAttendanceViewer(HasRole):
     required_roles = {"school_admin", "manager", "teacher", "parent"}
 
 
+class IsExamStaff(HasRole):
+    """School admins, managers, and teachers can manage exams and mark entry."""
+
+    required_roles = {"school_admin", "manager", "teacher"}
+
+
+class IsExamViewer(HasRole):
+    """Staff and parents can view exams/marks scoped to their role."""
+
+    required_roles = {"school_admin", "manager", "teacher", "parent"}
+
+
 def get_active_role(user) -> str | None:
     if not user.is_authenticated:
         return None

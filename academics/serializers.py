@@ -154,11 +154,20 @@ class TeacherSubjectAssignmentSerializer(serializers.ModelSerializer):
     teacher_name = serializers.CharField(source="teacher.user.first_name", read_only=True, default="")
     subject_name = serializers.CharField(source="subject.name", read_only=True, default="")
     section_name = serializers.CharField(source="section.name", read_only=True, default="")
+    section_label = serializers.SerializerMethodField()
+    class_level_name = serializers.CharField(source="section.class_level.name", read_only=True, default="")
 
     class Meta:
         model = TeacherSubjectAssignment
         fields = "__all__"
         read_only_fields = ("school",)
+
+    def get_section_label(self, obj: TeacherSubjectAssignment) -> str:
+        class_name = getattr(getattr(obj.section, "class_level", None), "name", "") or ""
+        section_name = getattr(obj.section, "name", "") or ""
+        if class_name and section_name:
+            return f"{class_name}-{section_name}"
+        return class_name or section_name
 
     def validate(self, attrs):
         request = self.context.get("request")
