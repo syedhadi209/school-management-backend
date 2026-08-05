@@ -1,7 +1,10 @@
+from decimal import Decimal, InvalidOperation
+
 from django.db import transaction
 from rest_framework import serializers
 
 from accounts.models import TeacherProfile
+from fees.models import FeeStructure
 from schools.services import get_or_create_default_academic_year
 
 from .models import ClassLevel, ClassSubject, PassingCriteria, Section, Subject, TeacherSubjectAssignment
@@ -10,6 +13,13 @@ from .models import ClassLevel, ClassSubject, PassingCriteria, Section, Subject,
 class ClassLevelSerializer(serializers.ModelSerializer):
     academic_year_name = serializers.CharField(source="academic_year.name", read_only=True, default="")
     section_count = serializers.IntegerField(read_only=True, default=0)
+    monthly_fee_amount = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        write_only=True,
+    )
 
     class Meta:
         model = ClassLevel
@@ -20,12 +30,57 @@ class ClassLevelSerializer(serializers.ModelSerializer):
             "academic_year": {"required": False},
         }
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        fee = instance.fee_structures.first()
+        data["monthly_fee_amount"] = fee.amount if fee else None
+        return data
+
     def validate_academic_year(self, academic_year):
         request = self.context.get("request")
         school = getattr(getattr(request, "user", None), "active_school", None)
         if school is not None and academic_year.school_id != school.id:
             raise serializers.ValidationError("Academic year must belong to your active school.")
         return academic_year
+
+    def validate_monthly_fee_amount(self, value):
+        if value is None:
+            return None
+        try:
+            amount = Decimal(value)
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise serializers.ValidationError("Enter a valid monthly fee amount.") from exc
+        if amount < 0:
+            raise serializers.ValidationError("Monthly fee cannot be negative.")
+        return amount
+
+    def create(self, validated_data):
+        monthly_fee = validated_data.pop("monthly_fee_amount", None)
+        class_level = super().create(validated_data)
+        self._upsert_monthly_fee(class_level, monthly_fee, clear_if_none=False)
+        return class_level
+
+    def update(self, instance, validated_data):
+        monthly_fee_provided = "monthly_fee_amount" in validated_data
+        monthly_fee = validated_data.pop("monthly_fee_amount", None)
+        class_level = super().update(instance, validated_data)
+        if monthly_fee_provided:
+            self._upsert_monthly_fee(class_level, monthly_fee, clear_if_none=True)
+        return class_level
+
+    def _upsert_monthly_fee(self, class_level: ClassLevel, monthly_fee, *, clear_if_none: bool) -> None:
+        if monthly_fee is None or monthly_fee == 0:
+            if clear_if_none or monthly_fee == 0:
+                FeeStructure.objects.filter(school=class_level.school, class_level=class_level).delete()
+            return
+        FeeStructure.objects.update_or_create(
+            school=class_level.school,
+            class_level=class_level,
+            defaults={
+                "name": f"{class_level.name} Monthly Tuition",
+                "amount": monthly_fee,
+            },
+        )
 
 
 class SectionSerializer(serializers.ModelSerializer):

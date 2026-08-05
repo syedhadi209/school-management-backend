@@ -13,7 +13,9 @@ TEACHER_EDITABLE_FIELDS = {"board_roll_number"}
 
 
 class StudentViewSet(TenantScopedModelViewSet):
-    queryset = Student.objects.select_related("section", "section__class_level").all()
+    queryset = Student.objects.select_related(
+        "section", "section__class_level", "monthly_fee", "monthly_fee__fee_structure"
+    ).all()
     serializer_class = StudentSerializer
     permission_classes = [IsAuthenticated, IsStudentStaff]
     search_fields = [

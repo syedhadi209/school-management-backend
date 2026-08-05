@@ -44,6 +44,33 @@ class DefaultSectionTests(TestCase):
         self.assertEqual(sections.first().name, "A")
         self.assertEqual(sections.first().school_id, self.school.id)
 
+    def test_creating_class_with_monthly_fee(self):
+        from decimal import Decimal
+
+        from fees.models import FeeStructure
+
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.post(
+            "/api/v1/class-levels/",
+            {"name": "Class Fee Test", "order": 40, "monthly_fee_amount": "3000"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(Decimal(str(response.data["monthly_fee_amount"])), Decimal("3000.00"))
+        class_id = response.data["id"]
+        fee = FeeStructure.objects.get(class_level_id=class_id)
+        self.assertEqual(fee.amount, Decimal("3000.00"))
+
+        update = self.client.patch(
+            f"/api/v1/class-levels/{class_id}/",
+            {"monthly_fee_amount": "3500"},
+            format="json",
+        )
+        self.assertEqual(update.status_code, 200, update.data)
+        self.assertEqual(Decimal(str(update.data["monthly_fee_amount"])), Decimal("3500.00"))
+        fee.refresh_from_db()
+        self.assertEqual(fee.amount, Decimal("3500.00"))
+
     def test_new_class_appears_in_section_lookup(self):
         self.client.force_authenticate(user=self.admin)
         self.client.post("/api/v1/class-levels/", {"name": "Class 4", "order": 4}, format="json")

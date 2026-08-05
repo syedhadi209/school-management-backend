@@ -19,7 +19,12 @@ from .services import get_or_create_default_section
 
 
 class ClassLevelViewSet(TenantScopedModelViewSet):
-    queryset = ClassLevel.objects.select_related("academic_year").annotate(section_count=Count("sections")).all()
+    queryset = (
+        ClassLevel.objects.select_related("academic_year")
+        .prefetch_related("fee_structures")
+        .annotate(section_count=Count("sections"))
+        .all()
+    )
     serializer_class = ClassLevelSerializer
     permission_classes = [IsAuthenticated, IsManager]
     search_fields = ["name", "academic_year__name"]

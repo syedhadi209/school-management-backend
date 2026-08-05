@@ -10,7 +10,7 @@ from accounts.models import ParentProfile, RoleChoices, TeacherProfile, UserRole
 from admissions.models import Admission, Inquiry, VisitorLog
 from attendance.models import AttendanceRecord, AttendanceSession
 from exams.models import Exam, Mark, MarkSheet
-from fees.models import FeeStructure, Invoice, Payment
+from fees.models import FeeStructure, Invoice, Payment, StudentMonthlyFee
 from schools.models import AcademicYear, School, SchoolSubscription
 from students.models import ParentStudentLink, Student
 from timetable.models import TimetableEntry
@@ -397,14 +397,32 @@ class Command(BaseCommand):
             fee_structure, _ = FeeStructure.objects.get_or_create(
                 school=school,
                 class_level=level,
-                name=f"{level.name} Monthly Tuition",
-                defaults={"amount": 10000 + (class_levels.index(level) * 1200)},
+                defaults={
+                    "name": f"{level.name} Monthly Tuition",
+                    "amount": 10000 + (class_levels.index(level) * 1200),
+                },
             )
+            expected_amount = 10000 + (class_levels.index(level) * 1200)
+            if fee_structure.amount != expected_amount or not fee_structure.name:
+                fee_structure.amount = expected_amount
+                fee_structure.name = f"{level.name} Monthly Tuition"
+                fee_structure.save(update_fields=["amount", "name"])
             fee_structures.append(fee_structure)
 
         for idx, student in enumerate(students):
             fee_structure = fee_structures[idx % len(fee_structures)]
-            total_amount = fee_structure.amount
+            discount = Decimal("500") if idx == 0 else Decimal("0")
+            StudentMonthlyFee.objects.update_or_create(
+                student=student,
+                defaults={
+                    "school": school,
+                    "fee_structure": fee_structure,
+                    "base_amount": fee_structure.amount,
+                    "discount_amount": discount,
+                    "notes": "Sibling discount" if idx == 0 else "",
+                },
+            )
+            total_amount = fee_structure.amount - discount
             status = ["unpaid", "partial", "paid"][idx % 3]
             paid_amount = Decimal("0")
             if status == "partial":

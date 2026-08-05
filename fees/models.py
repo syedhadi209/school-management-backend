@@ -1,11 +1,62 @@
+from decimal import Decimal
+
 from django.db import models
 
 
 class FeeStructure(models.Model):
+    """Monthly tuition amount for a class level (one per school + class)."""
+
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="fee_structures")
-    class_level = models.ForeignKey("academics.ClassLevel", on_delete=models.CASCADE, related_name="fee_structures")
-    name = models.CharField(max_length=100)
+    class_level = models.ForeignKey(
+        "academics.ClassLevel", on_delete=models.CASCADE, related_name="fee_structures"
+    )
+    name = models.CharField(max_length=100, default="Monthly Tuition")
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["school", "class_level"],
+                name="fee_structure_unique_monthly_per_class",
+            ),
+        ]
+        ordering = ["class_level__order", "class_level__name", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.class_level_id}: {self.name} ({self.amount})"
+
+
+class StudentMonthlyFee(models.Model):
+    """Per-student monthly tuition snapshot with optional discount."""
+
+    school = models.ForeignKey(
+        "schools.School", on_delete=models.CASCADE, related_name="student_monthly_fees"
+    )
+    student = models.OneToOneField(
+        "students.Student", on_delete=models.CASCADE, related_name="monthly_fee"
+    )
+    fee_structure = models.ForeignKey(
+        FeeStructure,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="student_monthly_fees",
+    )
+    base_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0"))
+    notes = models.CharField(max_length=255, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"Student {self.student_id} fee {self.effective_amount}"
+
+    @property
+    def effective_amount(self) -> Decimal:
+        return max(self.base_amount - self.discount_amount, Decimal("0"))
 
 
 class Invoice(models.Model):
