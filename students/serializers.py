@@ -15,6 +15,7 @@ from .models import ParentStudentLink, Student
 class StudentSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     section_name = serializers.CharField(source="section.name", read_only=True, default=None)
+    class_level = serializers.IntegerField(source="section.class_level_id", read_only=True, default=None)
     class_level_name = serializers.CharField(source="section.class_level.name", read_only=True, default=None)
     is_board_class = serializers.SerializerMethodField()
     parent_invite_pending = serializers.SerializerMethodField()
