@@ -14,7 +14,7 @@ TEACHER_EDITABLE_FIELDS = {"board_roll_number"}
 
 class StudentViewSet(TenantScopedModelViewSet):
     queryset = Student.objects.select_related(
-        "section", "section__class_level", "monthly_fee", "monthly_fee__fee_structure"
+        "section", "section__class_level", "monthly_fee", "monthly_fee__fee_structure", "family"
     ).all()
     serializer_class = StudentSerializer
     permission_classes = [IsAuthenticated, IsStudentStaff]
@@ -28,8 +28,9 @@ class StudentViewSet(TenantScopedModelViewSet):
         "mother_name",
         "parent_email",
         "guardian_phone",
+        "family__family_code",
     ]
-    filterset_fields = ["status", "section", "gender", "section__class_level__is_board_class"]
+    filterset_fields = ["status", "section", "gender", "section__class_level__is_board_class", "family"]
     ordering_fields = ["first_name", "admission_date", "roll_number", "board_roll_number"]
     ordering = ["first_name"]
 

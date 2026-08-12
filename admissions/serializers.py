@@ -1,10 +1,13 @@
+from decimal import Decimal, InvalidOperation
+
 from rest_framework import serializers
 
 from academics.models import ClassLevel, Section
 from core.cnic import validate_cnic
+from core.image_uploads import optimize_profile_image
+from students.models import Student
 
 from .models import Admission, Inquiry, VisitorLog
-
 
 APPLIED_REQUIRED_FIELDS = (
     "date_of_birth",
@@ -59,6 +62,12 @@ class InquirySerializer(serializers.ModelSerializer):
     def validate_email(self, value: str) -> str:
         return (value or "").strip().lower()
 
+    def validate_profile_image(self, value):
+        return optimize_profile_image(value)
+
+    def validate_family_lookup_code(self, value: str) -> str:
+        return (value or "").strip().upper()
+
     def validate_interested_class_level(self, class_level: ClassLevel | None) -> ClassLevel | None:
         if class_level is None:
             return None
@@ -99,7 +108,6 @@ class InquirySerializer(serializers.ModelSerializer):
                     {"rejection_reason": "Provide a rejection reason when rejecting an inquiry."}
                 )
 
-        # Quick inquiry: name + phone or email.
         full_name = attrs.get("full_name", getattr(instance, "full_name", "") if instance else "")
         first_name = attrs.get("first_name", getattr(instance, "first_name", "") if instance else "")
         if not (full_name or "").strip() and not (first_name or "").strip():
@@ -160,13 +168,57 @@ class AdmitInquirySerializer(serializers.Serializer):
     admission_date = serializers.DateField(required=False, allow_null=True)
     student_status = serializers.CharField(required=False, default="active")
 
-    def validate_student_status(self, value: str) -> str:
-        from students.models import Student
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+    gender = serializers.ChoiceField(choices=Student.GENDER_CHOICES, required=False, allow_blank=True)
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
+    guardian_phone = serializers.CharField(required=False, allow_blank=True)
+    parent_alternate_phone = serializers.CharField(required=False, allow_blank=True)
+    parent_email = serializers.EmailField(required=False, allow_blank=True)
+    parent_occupation = serializers.CharField(required=False, allow_blank=True)
+    father_name = serializers.CharField(required=False, allow_blank=True)
+    mother_name = serializers.CharField(required=False, allow_blank=True)
+    father_cnic = serializers.CharField(required=False, allow_blank=True)
+    mother_cnic = serializers.CharField(required=False, allow_blank=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    region = serializers.CharField(required=False, allow_blank=True)
+    board_roll_number = serializers.CharField(required=False, allow_blank=True)
+    profile_image = serializers.ImageField(required=False, allow_null=True)
+    discount_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, allow_null=True)
+    fee_notes = serializers.CharField(required=False, allow_blank=True)
+    family_lookup_code = serializers.CharField(required=False, allow_blank=True)
 
+    def validate_family_lookup_code(self, value: str) -> str:
+        return (value or "").strip().upper()
+
+    def validate_discount_amount(self, value):
+        if value is None:
+            return None
+        try:
+            amount = Decimal(value)
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise serializers.ValidationError("Enter a valid discount amount.") from exc
+        if amount < 0:
+            raise serializers.ValidationError("Discount cannot be negative.")
+        return amount
+
+    def validate_student_status(self, value: str) -> str:
         allowed = {choice[0] for choice in Student.STATUS_CHOICES}
         if value not in allowed:
             raise serializers.ValidationError("Invalid student status.")
         return value
+
+    def validate_father_cnic(self, value: str) -> str:
+        return validate_cnic(value)
+
+    def validate_mother_cnic(self, value: str) -> str:
+        return validate_cnic(value)
+
+    def validate_parent_email(self, value: str) -> str:
+        return (value or "").strip().lower()
+
+    def validate_profile_image(self, value):
+        return optimize_profile_image(value)
 
     def validate_section(self, section: Section) -> Section:
         request = self.context.get("request")

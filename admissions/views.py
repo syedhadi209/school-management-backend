@@ -54,6 +54,11 @@ class InquiryViewSet(TenantScopedModelViewSet):
             acting_user=request.user,
             admission_date=serializer.validated_data.get("admission_date"),
             student_status=serializer.validated_data.get("student_status", "active"),
+            student_payload={
+                key: value
+                for key, value in serializer.validated_data.items()
+                if key not in {"section", "admission_date", "student_status"}
+            },
         )
 
         return Response(

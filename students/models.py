@@ -27,6 +27,7 @@ class Student(models.Model):
         ("other", "Other"),
     )
     school = models.ForeignKey("schools.School", on_delete=models.CASCADE, related_name="students")
+    family = models.ForeignKey("families.Family", on_delete=models.SET_NULL, null=True, blank=True, related_name="students")
     section = models.ForeignKey(
         "academics.Section", on_delete=models.SET_NULL, null=True, blank=True, related_name="students"
     )

@@ -11,6 +11,7 @@ from admissions.models import Admission, Inquiry, VisitorLog
 from attendance.models import AttendanceRecord, AttendanceSession
 from exams.models import Exam, Mark, MarkSheet
 from fees.models import FeeStructure, Invoice, Payment, StudentMonthlyFee
+from families.models import Family
 from funds.models import Fund
 from funds.services import activate_fund
 from schools.models import AcademicYear, School, SchoolSubscription
@@ -342,6 +343,29 @@ class Command(BaseCommand):
                 defaults={"relation": "Mother" if idx % 2 == 0 else "Father"},
             )
 
+
+        # Create demo families and attach siblings for easier testing.
+        family_groups = [
+            ("FAM-1001", students[0:2]),
+            ("FAM-1002", students[2:4]),
+            ("FAM-1003", students[4:6]),
+        ]
+        for code, members in family_groups:
+            family, _ = Family.objects.get_or_create(
+                school=school,
+                family_code=code,
+                defaults={
+                    "primary_contact_email": members[0].parent_email if members else "",
+                    "father_name": members[0].father_name if members else "",
+                    "mother_name": members[0].mother_name if members else "",
+                    "address": members[0].address if members else "",
+                },
+            )
+            for member in members:
+                if member.family_id != family.id:
+                    member.family = family
+                    member.save(update_fields=["family"])
+
         # Seed a couple of submitted attendance sessions for Ali's Monday lectures.
         ali_teacher = next((profile for profile in teacher_profiles if profile.user.email == "teacher@demo.school"), None)
         if ali_teacher is not None:
@@ -546,6 +570,28 @@ class Command(BaseCommand):
             inquiry.status = status
             inquiry.save()
             inquiries.append(inquiry)
+
+
+        Inquiry.objects.update_or_create(
+            school=school,
+            full_name="Walk In Prospect",
+            defaults={
+                "first_name": "Walk",
+                "last_name": "In",
+                "phone": "03119990000",
+                "status": "new",
+                "source": "walk_in",
+                "interested_class": class_levels[0].name if class_levels else "",
+                "interested_class_level": class_levels[0] if class_levels else None,
+                "parent_email": "walkin.parent@demo.school",
+                "parent_phone": "03119990000",
+                "father_name": "Walk In Father",
+                "mother_name": "Walk In Mother",
+                "address": "Demo Block, Lahore",
+                "region": "Lahore",
+                "notes": "Ready to admit from new stage",
+            },
+        )
 
         for idx in range(12):
             VisitorLog.objects.get_or_create(

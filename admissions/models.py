@@ -3,6 +3,13 @@ from django.db import models
 from django.utils import timezone
 
 
+def inquiry_profile_image_path(instance: "Inquiry", filename: str) -> str:
+    from uuid import uuid4
+
+    school_id = instance.school_id or "unknown"
+    return f"profile-images/inquiries/school-{school_id}/{uuid4().hex}.webp"
+
+
 class Inquiry(models.Model):
     STATUS_CHOICES = (
         ("new", "New"),
@@ -59,6 +66,10 @@ class Inquiry(models.Model):
     parent_email = models.EmailField(blank=True)
     parent_phone = models.CharField(max_length=30, blank=True)
     parent_alternate_phone = models.CharField(max_length=30, blank=True)
+    parent_occupation = models.CharField(max_length=150, blank=True)
+    board_roll_number = models.CharField(max_length=50, blank=True)
+    profile_image = models.ImageField(upload_to=inquiry_profile_image_path, blank=True)
+    family_lookup_code = models.CharField(max_length=32, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -11,6 +11,7 @@ from PIL import Image
 
 from accounts.models import RoleChoices, TeacherProfile, UserRole
 from academics.models import ClassLevel, Section
+from families.models import Family
 from schools.models import AcademicYear, School
 from students.models import Student
 
@@ -329,6 +330,54 @@ class FamilyFieldsAndParentProvisioningTests(TestCase):
         from students.models import ParentStudentLink
 
         self.assertEqual(ParentStudentLink.objects.filter(student_id=student_id).count(), 1)
+
+
+    def test_family_is_auto_created_by_parent_email(self):
+        self.client.force_authenticate(user=self.admin)
+        first = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Sibling",
+                "last_name": "One",
+                "status": "active",
+                "section": self.section.id,
+                "parent_email": "siblings@family.test",
+            },
+            format="json",
+        )
+        second = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Sibling",
+                "last_name": "Two",
+                "status": "active",
+                "section": self.section.id,
+                "parent_email": "siblings@family.test",
+            },
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(first.data["family_code"], second.data["family_code"])
+        self.assertTrue(first.data["family_code"].startswith("FAM-"))
+
+    def test_student_can_link_to_existing_family_code(self):
+        self.client.force_authenticate(user=self.admin)
+        family = Family.objects.create(school=self.school, family_code="FAM-0099", primary_contact_email="")
+        response = self.client.post(
+            "/api/v1/students/",
+            {
+                "first_name": "Linked",
+                "last_name": "Kid",
+                "status": "active",
+                "section": self.section.id,
+                "family_lookup_code": "fam-0099",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["family"], family.id)
+        self.assertEqual(response.data["family_code"], "FAM-0099")
 
     def test_parent_email_conflict_across_schools(self):
         other_admin = User.objects.create_user(

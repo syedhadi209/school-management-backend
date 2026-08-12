@@ -8,6 +8,7 @@ from core.cnic import validate_cnic
 from core.image_uploads import optimize_profile_image, schedule_storage_delete
 from fees.services import upsert_student_monthly_fee
 from funds.services import ensure_student_fund_invoices
+from families.services import link_student_to_family, resolve_family
 
 from .models import ParentStudentLink, Student
 
@@ -29,6 +30,8 @@ class StudentSerializer(serializers.ModelSerializer):
     monthly_fee_effective = serializers.SerializerMethodField()
     fee_structure = serializers.SerializerMethodField()
     fee_notes_display = serializers.SerializerMethodField()
+    family_code = serializers.CharField(source="family.family_code", read_only=True, default="")
+    family_lookup_code = serializers.CharField(write_only=True, required=False, allow_blank=True)
 
     def get_full_name(self, obj: Student) -> str:
         return f"{obj.first_name} {obj.last_name}".strip()
@@ -106,6 +109,9 @@ class StudentSerializer(serializers.ModelSerializer):
     def validate_parent_email(self, value: str) -> str:
         return (value or "").strip().lower()
 
+    def validate_family_lookup_code(self, value: str) -> str:
+        return (value or "").strip().upper()
+
     def validate_profile_image(self, value):
         return optimize_profile_image(value)
 
@@ -182,6 +188,7 @@ class StudentSerializer(serializers.ModelSerializer):
         validated_data.pop("profile_image_clear", None)
         discount_amount = validated_data.pop("discount_amount", None)
         fee_notes = validated_data.pop("fee_notes", None)
+        family_lookup_code = (validated_data.pop("family_lookup_code", "") or "").strip()
         student = super().create(validated_data)
         # Always sync when section is present so base fee is snapshotted even with 0 discount.
         if student.section_id is not None or discount_amount is not None or fee_notes is not None:
@@ -194,10 +201,17 @@ class StudentSerializer(serializers.ModelSerializer):
         if student.section_id is not None:
             ensure_student_fund_invoices(student)
         self._sync_parent(student)
+        family = resolve_family(
+            school=student.school,
+            family_code=family_lookup_code or None,
+            parent_email=student.parent_email or None,
+        )
+        link_student_to_family(student=student, family=family)
         return student
 
     def update(self, instance, validated_data):
         clear_profile_image = validated_data.pop("profile_image_clear", False)
+        family_lookup_code = (validated_data.pop("family_lookup_code", "") or "").strip()
         discount_provided = "discount_amount" in validated_data
         notes_provided = "fee_notes" in validated_data
         discount_amount = validated_data.pop("discount_amount", None)
@@ -224,6 +238,12 @@ class StudentSerializer(serializers.ModelSerializer):
         if section_changed and student.section_id is not None:
             ensure_student_fund_invoices(student)
         self._sync_parent(student)
+        family = resolve_family(
+            school=student.school,
+            family_code=family_lookup_code or (student.family.family_code if student.family_id else None),
+            parent_email=student.parent_email or None,
+        )
+        link_student_to_family(student=student, family=family)
         return student
 
     def _sync_parent(self, student: Student) -> None:

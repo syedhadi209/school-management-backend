@@ -7,6 +7,8 @@ from rest_framework.test import APIClient
 from accounts.models import RoleChoices, UserRole
 from academics.models import ClassLevel, Section
 from admissions.models import Admission, Inquiry
+from fees.models import FeeStructure
+from families.models import Family
 from schools.models import AcademicYear, School
 from students.models import ParentStudentLink, Student
 
@@ -37,6 +39,12 @@ class AdmissionsEnrollmentTests(TestCase):
             class_level=self.class_level,
             name="A",
             capacity=2,
+        )
+        FeeStructure.objects.create(
+            school=self.school,
+            class_level=self.class_level,
+            name="Class 2 Monthly",
+            amount="12000",
         )
         self.other_year = AcademicYear.objects.create(
             school=self.other_school,
@@ -249,16 +257,34 @@ class AdmissionsEnrollmentTests(TestCase):
         response = self.client.get("/api/v1/inquiries/")
         self.assertEqual(response.status_code, 403)
 
-    def test_new_inquiry_cannot_be_admitted(self):
+    def test_new_inquiry_can_be_admitted_with_full_payload(self):
         self.client.force_authenticate(user=self.admin)
         created = self.client.post(
             "/api/v1/inquiries/",
-            {"full_name": "Too Early", "phone": "0300", "status": "new"},
+            {
+                "full_name": "Too Early",
+                "first_name": "Too",
+                "last_name": "Early",
+                "phone": "0300",
+                "status": "new",
+                "parent_email": "new.inquiry.parent@admit.test",
+                "interested_class_level": self.class_level.id,
+            },
             format="json",
         )
         response = self.client.post(
             f"/api/v1/inquiries/{created.data['id']}/admit/",
-            {"section": self.section.id},
+            {
+                "section": self.section.id,
+                "first_name": "Updated",
+                "last_name": "Name",
+                "family_lookup_code": "",
+                "discount_amount": "500",
+                "fee_notes": "Admission scholarship",
+            },
             format="json",
         )
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["student"]["first_name"], "Updated")
+        self.assertTrue(response.data["student"]["family_code"].startswith("FAM-"))
+        self.assertTrue(Family.objects.filter(school=self.school).exists())

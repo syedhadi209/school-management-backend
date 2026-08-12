@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     "core",
     "academics",
     "students",
+    "families",
     "exams",
     "fees",
     "funds",
